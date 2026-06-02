@@ -8,6 +8,7 @@ import { JobCodeLensProvider } from "./codeLens";
 import { JobTreeProvider } from "./treeView";
 import { RunHistory } from "./history";
 import { RunManager } from "./runManager";
+import { PipelineStore } from "./pipelineStore";
 import { Dashboard } from "./dashboard";
 
 /** Expand a leading `~` and `$HOME`/`${HOME}` to the user's home directory. */
@@ -53,8 +54,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Dedicated channel that always holds the captured output of a chosen run, so
   // a failure is readable even after its terminal is closed.
   const runLog = vscode.window.createOutputChannel("GitLab CI Local — Run Log");
-  const runManager = new RunManager(glci, history, runLog);
-  context.subscriptions.push(filter, index, history, output, runLog, runManager);
+  // Persists per-job statuses + logs for whole-pipeline runs so they survive a
+  // reload. Hydrated before the first refresh so past runs are immediately
+  // browsable in the Pipelines view.
+  const pipelineStore = new PipelineStore(context.storageUri);
+  await pipelineStore.init();
+  const runManager = new RunManager(glci, history, runLog, pipelineStore);
+  context.subscriptions.push(
+    filter,
+    index,
+    history,
+    output,
+    runLog,
+    pipelineStore,
+    runManager,
+  );
 
   // Modern editor-area pipeline view (opened on demand).
   const dashboard = new Dashboard(
