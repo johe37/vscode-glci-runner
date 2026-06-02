@@ -91,7 +91,31 @@ export class Dashboard {
       this.filter.onDidChange(refresh),
       this.history.onDidChange(refresh),
       this.runManager.onDidChangeLive(refresh),
+      // Stream a job's output straight to the open log view (no full re-render).
+      this.runManager.onDidAppendJobLog((e) => this.onJobLogAppend(e)),
     );
+  }
+
+  /** Forward a streamed log chunk to the webview if it's viewing that job. */
+  private onJobLogAppend(e: {
+    runId: string;
+    job: string;
+    chunk: string;
+  }): void {
+    if (
+      !this.panel ||
+      this.route.name !== "jobLog" ||
+      this.route.runId !== e.runId ||
+      this.route.job !== e.job
+    ) {
+      return;
+    }
+    void this.panel.webview.postMessage({
+      type: "jobLogAppend",
+      runId: e.runId,
+      job: e.job,
+      chunk: e.chunk,
+    });
   }
 
   /** Create the panel (or reveal it), optionally navigating to a route. */
@@ -408,11 +432,18 @@ export class Dashboard {
             job: this.route.job,
             status,
             isPipelineJob: rec?.kind === "pipeline",
+            // Prefer the synchronous in-memory log (no await → no race with a
+            // chunk arriving mid-read); fall back to disk for past-session runs.
             text:
+              this.runManager.liveJobLogText(
+                this.route.runId,
+                this.route.job,
+              ) ??
               (await this.runManager.jobLogText(
                 this.route.runId,
                 this.route.job,
-              )) ?? "",
+              )) ??
+              "",
           },
         };
         break;
@@ -669,6 +700,9 @@ const ICON_CLASS = { passed: "icon-pass", failed: "icon-fail", running: "icon-ru
 
 let current = null;
 let liveTimers = false;
+// The currently-mounted job-log pane, so streamed chunks append in place
+// instead of forcing a full re-render that would reset scroll and flicker.
+let logView = { runId: null, job: null, pane: null, head: null, placeholder: false };
 
 // Job-name -> card element, plus the lazily-created connector overlay.
 const cardByName = new Map();
@@ -844,7 +878,7 @@ function renderCard(job, mode, runId) {
     actions.appendChild(run);
     actions.appendChild(btn("+ needs", "tiny", (e) => { e.stopPropagation(); post("runNeeds", { name: job.name }); }, "Run with needs"));
     if (job.hasLocation) actions.appendChild(btn("Definition", "ghost tiny", (e) => { e.stopPropagation(); post("goto", { name: job.name }); }));
-    if (job.lastRunId) actions.appendChild(btn("Log", "ghost tiny", (e) => { e.stopPropagation(); post("showLog", { id: job.lastRunId }); }, "Show this job's last run output"));
+    if (job.lastRunId) actions.appendChild(btn("Log", "ghost tiny", (e) => { e.stopPropagation(); nav({ name: "jobLog", runId: job.lastRunId, job: job.name }); }, "View this job's last run output"));
   } else if (mode === "pipeline") {
     actions.appendChild(btn("View log", "ghost tiny", (e) => { e.stopPropagation(); nav({ name: "jobLog", runId: runId, job: job.name }); }));
     if (job.hasLocation) actions.appendChild(btn("Definition", "ghost tiny", (e) => { e.stopPropagation(); post("goto", { name: job.name }); }));
@@ -1019,28 +1053,61 @@ function renderPipelineDetail(state) {
   return c;
 }
 
-function renderJobLog(state) {
-  const c = el("div", "content");
-  const j = state.jobLog;
-  const head = el("div", "joblog-head");
+function buildJobLogHeader(head, j) {
+  head.innerHTML = "";
   if (j.status) head.appendChild(statusIcon(j.status));
   head.appendChild(el("h2", null, j.job));
   if (j.status) head.appendChild(el("span", "meta", j.status));
   head.appendChild(el("span", "spacer"));
   if (j.isPipelineJob) head.appendChild(btn("Show in Output", "ghost tiny", () => post("showJobLog", { runId: j.runId, job: j.job })));
   else head.appendChild(btn("Show in Output", "ghost tiny", () => post("showLog", { id: j.runId })));
+}
+
+function renderJobLog(state) {
+  const c = el("div", "content");
+  const j = state.jobLog;
+  const head = el("div", "joblog-head");
+  buildJobLogHeader(head, j);
   c.appendChild(head);
   const pane = el("pre", "log-pane");
   pane.id = "logPane";
-  pane.textContent = j.text && j.text.length ? j.text : "No captured output for this job yet.";
+  const hasText = !!(j.text && j.text.length);
+  pane.textContent = hasText
+    ? j.text
+    : (j.status === "running" ? "Waiting for output…" : "No captured output for this job.");
   c.appendChild(pane);
+  logView = { runId: j.runId, job: j.job, pane: pane, head: head, placeholder: !hasText };
   return c;
+}
+
+// Append a streamed chunk to the open pane, keeping it pinned to the bottom
+// unless the user has scrolled up to read earlier output.
+function applyAppend(msg) {
+  const v = logView;
+  if (!v.pane || !document.body.contains(v.pane)) return;
+  if (v.runId !== msg.runId || v.job !== msg.job) return;
+  const pane = v.pane;
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  if (v.placeholder) { pane.textContent = ""; v.placeholder = false; }
+  pane.textContent += msg.chunk;
+  if (pane.textContent.length > 1200000) {
+    pane.textContent = pane.textContent.slice(pane.textContent.length - 1000000);
+  }
+  if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
 /* --- Render dispatch --- */
 function render() {
   if (!current) return;
   const app = document.getElementById("app");
+  // Staying on the same job log: refresh the header (status may have changed)
+  // but leave the streaming pane untouched so appended output isn't clobbered.
+  if (current.route.name === "jobLog" && current.jobLog && logView.pane &&
+      document.body.contains(logView.pane) &&
+      logView.runId === current.jobLog.runId && logView.job === current.jobLog.job) {
+    buildJobLogHeader(logView.head, current.jobLog);
+    return;
+  }
   app.innerHTML = "";
   app.appendChild(renderTopbar(current));
   let view;
@@ -1060,6 +1127,7 @@ function render() {
 
 window.addEventListener("message", (e) => {
   const msg = e.data;
+  if (msg.type === "jobLogAppend") { applyAppend(msg); return; }
   if (msg.type !== "state") return;
   current = msg;
   liveTimers = !!(

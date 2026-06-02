@@ -68,6 +68,17 @@ export class RunManager {
   /** Fires when a pipeline run's per-job status changes (drives the dashboard). */
   private readonly liveEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLive = this.liveEmitter.event;
+  /**
+   * Fires for every chunk of a job's output as it streams, so the inline log
+   * viewer can append without a full re-render. `job` is the pipeline job name
+   * for pipeline runs, or the run's target for single job/stage runs.
+   */
+  private readonly appendEmitter = new vscode.EventEmitter<{
+    runId: string;
+    job: string;
+    chunk: string;
+  }>();
+  readonly onDidAppendJobLog = this.appendEmitter.event;
 
   constructor(
     private readonly glci: Glci,
@@ -118,15 +129,34 @@ export class RunManager {
   }
 
   /**
+   * Synchronous in-memory log for a job, or undefined if it isn't held this
+   * session. Reading without an `await` lets the dashboard seed the log pane in
+   * the same tick it sets the route, so no streamed chunk slips through the gap.
+   */
+  liveJobLogText(runId: string, jobName: string): string | undefined {
+    const p = this.pipelines.get(runId);
+    if (p) {
+      return p.jobs.get(jobName)?.log;
+    }
+    return this.logs.get(runId)?.text;
+  }
+
+  /**
    * One job's captured slice of a pipeline run. Live buffer first, then the
    * on-disk copy so a run from a previous session is still readable.
    */
   async jobLogText(runId: string, jobName: string): Promise<string | undefined> {
-    const live = this.pipelines.get(runId)?.jobs.get(jobName)?.log;
-    if (live !== undefined) {
-      return live;
+    const p = this.pipelines.get(runId);
+    if (p) {
+      const live = p.jobs.get(jobName)?.log;
+      if (live !== undefined) {
+        return live;
+      }
+      return this.store.logText(runId, jobName);
     }
-    return this.store.logText(runId, jobName);
+    // Single job/stage run: the whole captured run log is the job's log. This
+    // lives only in memory (never persisted), so it's available this session.
+    return this.logs.get(runId)?.text;
   }
 
   /** Dump one job's slice of a pipeline run into the run-log channel. */
@@ -156,14 +186,20 @@ export class RunManager {
     }
     p.buf += chunk;
     let changed = false;
+    // Per-job text appended during this chunk, emitted once below so the inline
+    // viewer streams smoothly (one message per job per chunk, not per line).
+    const deltas = new Map<string, string>();
     let nl: number;
     while ((nl = p.buf.indexOf("\n")) !== -1) {
       const raw = p.buf.slice(0, nl);
       p.buf = p.buf.slice(nl + 1);
       const line = stripAnsi(raw).replace(/\r$/, "");
-      if (this.parseLine(id, p, line)) {
+      if (this.parseLine(id, p, line, deltas)) {
         changed = true;
       }
+    }
+    for (const [job, text] of deltas) {
+      this.appendEmitter.fire({ runId: id, job, chunk: text });
     }
     if (changed) {
       this.liveEmitter.fire();
@@ -176,7 +212,12 @@ export class RunManager {
    * job line with the (space-padded) job name; the trailing summary uses
    * ` PASS  <job>` / ` FAIL  <job>`.
    */
-  private parseLine(id: string, p: LivePipeline, line: string): boolean {
+  private parseLine(
+    id: string,
+    p: LivePipeline,
+    line: string,
+    deltas: Map<string, string>,
+  ): boolean {
     const summary = line.match(/^\s+(PASS|FAIL)\s+(.+?)\s*$/);
     if (summary) {
       const name = summary[2].trim();
@@ -201,6 +242,7 @@ export class RunManager {
         const isNew = !p.jobs.has(name);
         const job = this.ensureJob(p, name);
         job.log += rest + "\n";
+        deltas.set(name, (deltas.get(name) ?? "") + rest + "\n");
         if (job.log.length > MAX_LOG) {
           job.log = job.log.slice(job.log.length - MAX_LOG);
         }
@@ -322,11 +364,22 @@ export class RunManager {
         });
         this.procs.set(id, child);
 
+        const isPipeline = liveJobs !== undefined;
         const onData = (d: Buffer) => {
           const text = d.toString();
           writeEmitter.fire(toCrlf(text));
           this.appendLog(id, label, text);
-          this.feedLive(id, text);
+          if (isPipeline) {
+            // Per-job parsing emits its own append events.
+            this.feedLive(id, text);
+          } else {
+            // Single job/stage run: the whole output is this job's log.
+            this.appendEmitter.fire({
+              runId: id,
+              job: target,
+              chunk: stripAnsi(text),
+            });
+          }
         };
         child.stdout?.on("data", onData);
         child.stderr?.on("data", onData);
@@ -457,5 +510,6 @@ export class RunManager {
 
   dispose(): void {
     this.liveEmitter.dispose();
+    this.appendEmitter.dispose();
   }
 }
