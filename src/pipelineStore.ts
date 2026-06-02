@@ -122,6 +122,21 @@ export class PipelineStore {
     this.flush(id);
   }
 
+  /** Forget a run entirely: drop the cache entry, manifest and log directory. */
+  async delete(id: string): Promise<void> {
+    this.cache.delete(id);
+    this.dirty.delete(id);
+    if (!this.dir) {
+      return;
+    }
+    await fs
+      .rm(path.join(this.dir, `${id}.json`), { force: true })
+      .catch(() => {});
+    await fs
+      .rm(path.join(this.dir, id), { recursive: true, force: true })
+      .catch(() => {});
+  }
+
   private logFile(id: string, job: string): string | undefined {
     if (!this.dir) {
       return undefined;

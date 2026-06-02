@@ -55,10 +55,12 @@ interface JobView {
   lastRunId?: string;
 }
 
-/** A short, human label for a run id (e.g. `pipeline #1234`). */
+/** GitLab-style run number (e.g. `#42`); falls back to the id for old runs. */
 function runTag(rec: RunRecord): string {
-  const seq = rec.id.split("-")[1] ?? rec.id;
-  return `#${seq}`;
+  if (typeof rec.number === "number") {
+    return `#${rec.number}`;
+  }
+  return `#${rec.id.split("-")[1] ?? rec.id}`;
 }
 
 /**
@@ -216,6 +218,15 @@ export class Dashboard {
       case "clearHistory":
         vscode.commands.executeCommand("glci.clearHistory");
         return;
+      case "clearJobs":
+        vscode.commands.executeCommand("glci.clearJobHistory");
+        return;
+      case "clearPipelines":
+        vscode.commands.executeCommand("glci.clearPipelines");
+        return;
+      case "deletePipeline":
+        vscode.commands.executeCommand("glci.deletePipeline", msg.id);
+        return;
       case "toggleNever":
         vscode.commands.executeCommand("glci.toggleHideNever");
         return;
@@ -346,7 +357,18 @@ export class Dashboard {
         break;
       case "pipelines":
         payload = {
-          pipelines: runs.filter((r) => r.kind === "pipeline"),
+          pipelines: runs
+            .filter((r) => r.kind === "pipeline")
+            .map((r) => ({
+              id: r.id,
+              label: r.label,
+              tag: runTag(r),
+              kind: r.kind,
+              target: r.target,
+              status: r.status,
+              startTime: r.startTime,
+              endTime: r.endTime ?? null,
+            })),
         };
         break;
       case "pipeline": {
@@ -501,6 +523,8 @@ body {
 }
 .btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 .btn.ghost { background: transparent; }
+.btn.danger { color: var(--fail); }
+.btn.danger:hover { background: rgba(221,43,14,.12); }
 .btn.tiny { padding: 2px 8px; font-size: 11px; }
 .btn:disabled { opacity: .5; cursor: default; }
 .toggle { font-size: 12px; color: var(--vscode-descriptionForeground); display: flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -902,7 +926,7 @@ function renderJobs(state) {
   const sub = el("div", "view-head");
   sub.appendChild(el("h3", "subhead", "Job run history"));
   sub.appendChild(el("span", "spacer"));
-  sub.appendChild(btn("Clear", "ghost tiny", () => post("clearHistory")));
+  sub.appendChild(btn("Clear", "ghost tiny", () => post("clearJobs")));
   c.appendChild(sub);
   c.appendChild(renderRunList(state.jobHistory || [], "job"));
   return c;
@@ -914,6 +938,7 @@ function renderPipelines(state) {
   head.appendChild(el("h2", null, "Pipelines"));
   head.appendChild(el("span", "spacer"));
   head.appendChild(btn("▶ Run pipeline", "primary", () => post("runPipeline"), "Run every job in order, like a real pipeline"));
+  if ((state.pipelines || []).length) head.appendChild(btn("Clear all", "ghost danger", () => post("clearPipelines"), "Remove all pipeline runs and their saved logs"));
   c.appendChild(head);
   c.appendChild(renderRunList(state.pipelines || [], "pipeline"));
   return c;
@@ -933,8 +958,12 @@ function renderRunList(rows, kind) {
     if (kind === "pipeline") row.addEventListener("click", () => nav({ name: "pipeline", runId: r.id }));
     row.appendChild(statusIcon(r.status));
     const label = el("div");
-    label.appendChild(el("span", "rlabel", r.label));
-    label.appendChild(el("span", "rkind", kindText(r.kind)));
+    if (kind === "pipeline") {
+      label.appendChild(el("span", "rlabel", "Pipeline " + (r.tag || "")));
+    } else {
+      label.appendChild(el("span", "rlabel", r.label));
+      label.appendChild(el("span", "rkind", kindText(r.kind)));
+    }
     row.appendChild(label);
     row.appendChild(el("span", "meta", fmtAgo(r.startTime)));
     const dur = r.endTime ? fmtDuration(r.endTime - r.startTime) : fmtDuration(Date.now() - r.startTime);
@@ -944,8 +973,12 @@ function renderRunList(rows, kind) {
     const actions = el("div", "ractions");
     if (kind === "pipeline") actions.appendChild(btn("Open", "ghost tiny", (e) => { e.stopPropagation(); nav({ name: "pipeline", runId: r.id }); }));
     actions.appendChild(btn("Log", "ghost tiny", (e) => { e.stopPropagation(); post("showLog", { id: r.id }); }, "Show captured output"));
-    if (r.status === "running") actions.appendChild(btn("Cancel", "ghost tiny", (e) => { e.stopPropagation(); post("cancel", { id: r.id }); }));
-    else actions.appendChild(btn("Re-run", "ghost tiny", (e) => { e.stopPropagation(); post("rerun", { target: r.target, kind: r.kind }); }));
+    if (r.status === "running") {
+      actions.appendChild(btn("Cancel", "ghost tiny", (e) => { e.stopPropagation(); post("cancel", { id: r.id }); }));
+    } else {
+      actions.appendChild(btn("Re-run", "ghost tiny", (e) => { e.stopPropagation(); post("rerun", { target: r.target, kind: r.kind }); }));
+      if (kind === "pipeline") actions.appendChild(btn("Delete", "ghost tiny danger", (e) => { e.stopPropagation(); post("deletePipeline", { id: r.id }); }, "Remove this pipeline run and its saved logs"));
+    }
     row.appendChild(actions);
     list.appendChild(row);
   }
