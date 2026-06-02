@@ -6,20 +6,32 @@ locally with one click, powered by
 
 ## Features
 
+- **Pipeline view.** A modern, GitLab-styled panel (open it from the **graph**
+  button in the Jobs view title, the welcome screen, or **GitLab CI Local: Open
+  Pipeline View**). Stages are laid out as columns of job cards, each showing its
+  latest run status (passed / failed / running / canceled) and badges for
+  `manual`, `never`, `allow_failure`, and `needs`. Run a job, run it with needs,
+  or jump to its definition straight from the card.
+- **Run history.** Every local run is recorded — label, start time, duration,
+  and pass/fail status — and shown in the history list at the bottom of the
+  Pipeline view. Cancel a running job or re-run a past one with one click.
+  History persists per workspace across reloads.
 - **Inline play buttons (CodeLens).** A `▶ Run` / `▶ Run with needs` button
   appears above every job in `.gitlab-ci.yml` and `.gitlab/ci/*.yml`, with an
   info line showing `stage · when · allow_failure`.
 - **Jobs sidebar.** A dedicated view in the activity bar lists all jobs grouped
-  by stage. Click a job to run it; use the context menu to run with needs, run a
-  whole stage, or jump to its definition.
+  by stage, with a status icon reflecting each job's last local run. Click a job
+  to run it; use the context menu to run with needs, run a whole stage, or jump
+  to its definition.
 - **Filters.** Toolbar toggles to hide `when: never` jobs and to hide jobs/stages
   listed in a project's `.glciconfig.toml` `[skip]` table.
 - **Preview & validate.** Run `--preview` (expanded YAML) and
   `--validate-dependency-chain` into an output channel.
 - **Auto-refresh.** Editing any CI YAML file re-reads the pipeline.
 
-Jobs run in an integrated terminal, so you get full Docker output and can
-`Ctrl-C` a run.
+Jobs run in a dedicated terminal that streams the full Docker output with color.
+You can `Ctrl-C` (or click **Cancel**) to abort a run; the extension captures the
+exit code and duration so the result lands in the run history.
 
 ## Requirements
 
@@ -91,6 +103,41 @@ gitlab-ci-local "<job>" \
 > string works in the terminal but breaks the non-shell `--list-json`/`--preview`
 > calls, where the whole element is passed as one argument.
 
+### Showing rule-gated jobs (everything looks `when: never`?)
+
+If most jobs render as `never`, it's usually because their `rules:` depend on
+the pipeline context. Run locally on `master`, `gitlab-ci-local` sets
+`CI_PIPELINE_SOURCE=push` and `CI_COMMIT_BRANCH=master`, so rules like:
+
+```yaml
+rules:
+  - if: $CI_PIPELINE_SOURCE == "pipeline"
+  - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != "master"
+  - if: $CI_COMMIT_TAG
+```
+
+never match. Simulate the context you want by overriding the predefined
+variables via `glci.variables` — these apply to listing too, so the **Pipeline
+view updates accordingly**:
+
+```jsonc
+{
+  "glci.variables": {
+    // Activate jobs gated on a pipeline-triggered run:
+    "CI_PIPELINE_SOURCE": "pipeline"
+    // Or simulate a feature-branch push:
+    // "CI_PIPELINE_SOURCE": "push",
+    // "CI_COMMIT_BRANCH": "feature/foo"
+  }
+}
+```
+
+> Overriding a *predefined* variable normally makes `gitlab-ci-local` print a
+> warning to **stdout** that would corrupt `--list-json`. The extension
+> automatically adds every `glci.variables` key to `GCL_IGNORE_PREDEFINED_VARS`
+> to suppress it, so prefer `glci.variables` over a `.gitlab-ci-local-variables.yml`
+> file for these overrides.
+
 ## Development
 
 ```bash
@@ -106,5 +153,10 @@ npx @vscode/vsce package   # produce a .vsix
 The extension shells out to `gitlab-ci-local --list-json` to discover jobs and
 their metadata (`stage`, `when`, `allow_failure`, `needs`, `rules`). It parses
 the CI YAML files with [`yaml`](https://github.com/eemeli/yaml) to map each job
-to its source line for CodeLens and "go to definition". Running a job simply
-sends `gitlab-ci-local "<job>"` to a terminal opened at the workspace root.
+to its source line for CodeLens and "go to definition".
+
+Running a job spawns `gitlab-ci-local "<job>"` and pipes its output into a VSCode
+pseudoterminal, so you still get live, colored Docker output and can `Ctrl-C` it,
+while the extension also captures the exit code and duration. Those results feed
+the per-job status shown in the Pipeline view and sidebar, and the persistent run
+history (stored in workspace state).

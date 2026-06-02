@@ -99,7 +99,7 @@
     "viewsWelcome": [
       {
         "view": "glci.jobs",
-        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
+        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\n[Open Pipeline View](command:glci.openPipeline)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
       }
     ],
     "commands": [
@@ -140,6 +140,30 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "glci.openPipeline",
+        "title": "Open Pipeline View",
+        "category": "GitLab CI Local",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "glci.clearHistory",
+        "title": "Clear Run History",
+        "category": "GitLab CI Local",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "glci.cancelRun",
+        "title": "Cancel Run",
+        "category": "GitLab CI Local",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "glci.showRunLog",
+        "title": "Show Run Log",
+        "category": "GitLab CI Local",
+        "icon": "$(output)"
+      },
+      {
         "command": "glci.setProjectRoot",
         "title": "Set Project Root...",
         "category": "GitLab CI Local",
@@ -166,6 +190,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "glci.openPipeline",
+          "when": "view == glci.jobs",
+          "group": "navigation@0"
+        },
         {
           "command": "glci.refresh",
           "when": "view == glci.jobs",
@@ -244,6 +273,14 @@
         },
         {
           "command": "glci.goToDefinition",
+          "when": "false"
+        },
+        {
+          "command": "glci.cancelRun",
+          "when": "false"
+        },
+        {
+          "command": "glci.showRunLog",
           "when": "false"
         }
       ]

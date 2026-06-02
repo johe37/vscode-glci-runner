@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { JobIndex } from "./jobIndex";
 import { JobFilter } from "./filter";
+import { RunHistory, RunStatus } from "./history";
 import { GlciJob } from "./glci";
 
 /** A stage grouping node in the tree. */
@@ -18,12 +19,15 @@ class StageItem extends vscode.TreeItem {
 
 /** A single job leaf node. */
 class JobItem extends vscode.TreeItem {
-  constructor(public readonly job: GlciJob) {
+  constructor(
+    public readonly job: GlciJob,
+    lastStatus?: RunStatus,
+  ) {
     super(job.name, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "glciJob";
-    this.description = describeShort(job);
+    this.description = describeShort(job, lastStatus);
     this.tooltip = buildTooltip(job);
-    this.iconPath = iconFor(job);
+    this.iconPath = iconFor(job, lastStatus);
     // Single click runs the job — the play affordance users expect.
     this.command = {
       title: "Run Job",
@@ -47,9 +51,11 @@ export class JobTreeProvider implements vscode.TreeDataProvider<Node> {
   constructor(
     private readonly index: JobIndex,
     private readonly filter: JobFilter,
+    private readonly history: RunHistory,
   ) {
     index.onDidChange(() => this.onChangeEmitter.fire());
     filter.onDidChange(() => this.onChangeEmitter.fire());
+    history.onDidChange(() => this.onChangeEmitter.fire());
   }
 
   getTreeItem(element: Node): vscode.TreeItem {
@@ -72,14 +78,17 @@ export class JobTreeProvider implements vscode.TreeDataProvider<Node> {
         .byStage()
         .find((g) => g.stage === element.stage)
         ?.jobs.filter((j) => this.filter.isVisible(j))
-        .map((j) => new JobItem(j)) ?? [];
+        .map((j) => new JobItem(j, this.history.latestFor(j.name)?.status)) ?? [];
     }
     return [];
   }
 }
 
-function describeShort(job: GlciJob): string {
+function describeShort(job: GlciJob, lastStatus?: RunStatus): string {
   const bits: string[] = [];
+  if (lastStatus) {
+    bits.push(lastStatus);
+  }
   if (job.when === "never") {
     bits.push("never");
   } else if (job.when === "manual") {
@@ -91,7 +100,30 @@ function describeShort(job: GlciJob): string {
   return bits.join(" · ");
 }
 
-function iconFor(job: GlciJob): vscode.ThemeIcon {
+/** Theme-colored status glyph for the last run, falling back to a when-icon. */
+function iconFor(job: GlciJob, lastStatus?: RunStatus): vscode.ThemeIcon {
+  switch (lastStatus) {
+    case "running":
+      return new vscode.ThemeIcon(
+        "loading~spin",
+        new vscode.ThemeColor("charts.blue"),
+      );
+    case "passed":
+      return new vscode.ThemeIcon(
+        "pass-filled",
+        new vscode.ThemeColor("testing.iconPassed"),
+      );
+    case "failed":
+      return new vscode.ThemeIcon(
+        "error",
+        new vscode.ThemeColor("testing.iconFailed"),
+      );
+    case "canceled":
+      return new vscode.ThemeIcon(
+        "circle-slash",
+        new vscode.ThemeColor("testing.iconSkipped"),
+      );
+  }
   if (job.when === "never") {
     return new vscode.ThemeIcon("circle-slash");
   }
