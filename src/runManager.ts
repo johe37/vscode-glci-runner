@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { spawn, ChildProcess } from "node:child_process";
 import { Glci } from "./glci";
 import { RunHistory, RunKind, RunStatus } from "./history";
+import { PipelineStore } from "./pipelineStore";
 
 /** Convert bare `\n` line endings to `\r\n` so a pseudoterminal renders them. */
 function toCrlf(text: string): string {
@@ -72,6 +73,7 @@ export class RunManager {
     private readonly glci: Glci,
     private readonly history: RunHistory,
     private readonly logChannel: vscode.OutputChannel,
+    private readonly store: PipelineStore,
   ) {}
 
   runJob(name: string, opts: { withNeeds?: boolean } = {}): void {
@@ -99,35 +101,45 @@ export class RunManager {
     );
   }
 
-  /** Per-job status for a pipeline run, or undefined if it has no live state. */
+  /**
+   * Per-job status for a pipeline run. Prefers the live in-memory state; after
+   * a reload that map is gone, so it falls back to the persisted store.
+   */
   pipelineStatuses(runId: string): Record<string, RunStatus> | undefined {
     const p = this.pipelines.get(runId);
-    if (!p) {
-      return undefined;
+    if (p) {
+      const out: Record<string, RunStatus> = {};
+      for (const [name, job] of p.jobs) {
+        out[name] = job.status;
+      }
+      return out;
     }
-    const out: Record<string, RunStatus> = {};
-    for (const [name, job] of p.jobs) {
-      out[name] = job.status;
-    }
-    return out;
+    return this.store.statuses(runId);
   }
 
-  /** One job's captured slice of a pipeline run, or undefined if not tracked. */
-  jobLogText(runId: string, jobName: string): string | undefined {
-    return this.pipelines.get(runId)?.jobs.get(jobName)?.log;
+  /**
+   * One job's captured slice of a pipeline run. Live buffer first, then the
+   * on-disk copy so a run from a previous session is still readable.
+   */
+  async jobLogText(runId: string, jobName: string): Promise<string | undefined> {
+    const live = this.pipelines.get(runId)?.jobs.get(jobName)?.log;
+    if (live !== undefined) {
+      return live;
+    }
+    return this.store.logText(runId, jobName);
   }
 
   /** Dump one job's slice of a pipeline run into the run-log channel. */
-  showJobLog(runId: string, jobName: string): void {
-    const job = this.pipelines.get(runId)?.jobs.get(jobName);
+  async showJobLog(runId: string, jobName: string): Promise<void> {
+    const text = await this.jobLogText(runId, jobName);
     this.logChannel.clear();
-    if (!job) {
+    if (text === undefined) {
       this.logChannel.appendLine(
-        `No captured output for "${jobName}" in this pipeline run yet.`,
+        `No captured output for "${jobName}" in this pipeline run.`,
       );
     } else {
       this.logChannel.appendLine(`=== ${jobName} (pipeline run) ===`);
-      this.logChannel.append(job.log);
+      this.logChannel.append(text);
     }
     this.logChannel.show(true);
   }
@@ -149,7 +161,7 @@ export class RunManager {
       const raw = p.buf.slice(0, nl);
       p.buf = p.buf.slice(nl + 1);
       const line = stripAnsi(raw).replace(/\r$/, "");
-      if (this.parseLine(p, line)) {
+      if (this.parseLine(id, p, line)) {
         changed = true;
       }
     }
@@ -164,7 +176,7 @@ export class RunManager {
    * job line with the (space-padded) job name; the trailing summary uses
    * ` PASS  <job>` / ` FAIL  <job>`.
    */
-  private parseLine(p: LivePipeline, line: string): boolean {
+  private parseLine(id: string, p: LivePipeline, line: string): boolean {
     const summary = line.match(/^\s+(PASS|FAIL)\s+(.+?)\s*$/);
     if (summary) {
       const name = summary[2].trim();
@@ -172,7 +184,12 @@ export class RunManager {
         return false;
       }
       const job = this.ensureJob(p, name);
-      return this.setStatus(job, summary[1] === "PASS" ? "passed" : "failed");
+      const changed = this.setStatus(
+        job,
+        summary[1] === "PASS" ? "passed" : "failed",
+      );
+      this.persistJob(id, name, job);
+      return changed;
     }
 
     for (const name of p.names) {
@@ -195,10 +212,25 @@ export class RunManager {
             this.setStatus(job, /FAIL/.test(rest) ? "failed" : "passed") ||
             changed;
         }
+        if (isNew || changed) {
+          this.persistJob(id, name, job);
+        }
         return changed;
       }
     }
     return false;
+  }
+
+  /**
+   * Mirror a job's live state into the persistent store: always its status,
+   * and its full captured log once the job reaches a terminal state (the
+   * in-memory buffer holds the complete slice, so we overwrite the file).
+   */
+  private persistJob(id: string, name: string, job: LiveJob): void {
+    this.store.setStatus(id, name, job.status);
+    if (job.status === "passed" || job.status === "failed") {
+      this.store.writeJobLog(id, name, job.log);
+    }
   }
 
   /** Get or create a job's live entry (new jobs start as `running`). */
@@ -269,6 +301,7 @@ export class RunManager {
         jobs: new Map(),
         buf: "",
       });
+      this.store.begin(id);
     }
 
     const writeEmitter = new vscode.EventEmitter<string>();
@@ -357,11 +390,15 @@ export class RunManager {
     const pipeline = this.pipelines.get(id);
     if (pipeline) {
       const fallback: RunStatus = status === "canceled" ? "canceled" : "failed";
-      for (const job of pipeline.jobs.values()) {
+      for (const [name, job] of pipeline.jobs) {
         if (job.status === "running") {
           job.status = fallback;
+          this.store.setStatus(id, name, fallback);
         }
+        // Persist every job's final log (covers jobs we never saw finish).
+        this.store.writeJobLog(id, name, job.log);
       }
+      this.store.finish(id);
       this.liveEmitter.fire();
     }
     if (this.shared && this.shared.id === id) {

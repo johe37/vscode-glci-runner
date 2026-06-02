@@ -201,7 +201,7 @@ export class Dashboard {
         return;
       case "showJobLog":
         if (typeof msg.runId === "string" && typeof msg.job === "string") {
-          this.runManager.showJobLog(msg.runId, msg.job);
+          void this.runManager.showJobLog(msg.runId, msg.job);
         }
         return;
       case "refresh":
@@ -300,7 +300,7 @@ export class Dashboard {
   }
 
   /** Project the live data into a serializable payload for the webview. */
-  private postState(): void {
+  private async postState(): Promise<void> {
     if (!this.panel) {
       return;
     }
@@ -386,7 +386,11 @@ export class Dashboard {
             job: this.route.job,
             status,
             isPipelineJob: rec?.kind === "pipeline",
-            text: this.runManager.jobLogText(this.route.runId, this.route.job) ?? "",
+            text:
+              (await this.runManager.jobLogText(
+                this.route.runId,
+                this.route.job,
+              )) ?? "",
           },
         };
         break;
@@ -976,7 +980,7 @@ function renderPipelineDetail(state) {
   c.appendChild(head);
 
   if (!d.hasLive && d.status !== "running") {
-    c.appendChild(el("div", "empty", "Per-job detail for this run isn't loaded (it predates this session). Job statuses will populate when persistence lands."));
+    c.appendChild(el("div", "empty", "No per-job detail was captured for this run."));
   }
   c.appendChild(renderBoard(d.stages || [], "pipeline", d.runId));
   return c;
