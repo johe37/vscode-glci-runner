@@ -99,7 +99,7 @@
     "viewsWelcome": [
       {
         "view": "glci.jobs",
-        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\n[Open Pipeline View](command:glci.openPipeline)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
+        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\n[Open GitLab CI](command:glci.openHome)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
       }
     ],
     "commands": [
@@ -144,6 +144,24 @@
         "title": "Refresh Jobs",
         "category": "GitLab CI Local",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "glci.openHome",
+        "title": "Open GitLab CI",
+        "category": "GitLab CI Local",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "glci.openJobs",
+        "title": "Open Jobs View",
+        "category": "GitLab CI Local",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "glci.openPipelines",
+        "title": "Open Pipelines View",
+        "category": "GitLab CI Local",
+        "icon": "$(graph)"
       },
       {
         "command": "glci.openPipeline",
@@ -197,7 +215,7 @@
     "menus": {
       "view/title": [
         {
-          "command": "glci.openPipeline",
+          "command": "glci.openHome",
           "when": "view == glci.jobs",
           "group": "navigation@0"
         },

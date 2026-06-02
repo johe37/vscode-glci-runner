@@ -135,10 +135,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         runManager.showLog(id);
       }
     }),
+    // Returns the new run's id so the dashboard can navigate to its detail page.
     vscode.commands.registerCommand("glci.runPipeline", () =>
       runManager.runPipeline(index.getJobs().map((j) => j.name)),
     ),
-    vscode.commands.registerCommand("glci.openPipeline", () => dashboard.show()),
+    vscode.commands.registerCommand("glci.openHome", () =>
+      dashboard.show({ name: "home" }),
+    ),
+    vscode.commands.registerCommand("glci.openJobs", () =>
+      dashboard.show({ name: "jobs" }),
+    ),
+    vscode.commands.registerCommand("glci.openPipelines", () =>
+      dashboard.show({ name: "pipelines" }),
+    ),
+    // Back-compat alias for the old entry point.
+    vscode.commands.registerCommand("glci.openPipeline", () =>
+      dashboard.show({ name: "pipelines" }),
+    ),
     vscode.commands.registerCommand("glci.clearHistory", () => history.clear()),
     vscode.commands.registerCommand("glci.preview", () =>
       glci.runToChannel(output, ["--preview"], "preview"),
