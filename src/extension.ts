@@ -9,6 +9,7 @@ import { JobTreeProvider } from "./treeView";
 import { RunHistory } from "./history";
 import { RunManager } from "./runManager";
 import { PipelineStore } from "./pipelineStore";
+import { RuntimeVariables } from "./variables";
 import { Dashboard } from "./dashboard";
 
 /** Expand a leading `~` and `$HOME`/`${HOME}` to the user's home directory. */
@@ -46,7 +47,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Resolved lazily so changing `glci.projectRoot` takes effect on refresh.
   const getRoot = () => resolveRoot(folder);
 
-  const glci = new Glci(getRoot);
+  // CI variables set from the UI, merged over the `glci.variables` setting.
+  const runtimeVars = new RuntimeVariables(context.workspaceState);
+  const glci = new Glci(getRoot, () => runtimeVars.all());
   const filter = new JobFilter(context.workspaceState, getRoot);
   const index = new JobIndex(glci, getRoot);
   const history = new RunHistory(context.workspaceState);
@@ -67,8 +70,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output,
     runLog,
     pipelineStore,
+    runtimeVars,
     runManager,
   );
+  // Variables affect rule evaluation, so re-list jobs whenever they change.
+  context.subscriptions.push(runtimeVars.onDidChange(() => void refresh()));
 
   // Modern editor-area pipeline view (opened on demand).
   const dashboard = new Dashboard(
@@ -77,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     filter,
     history,
     runManager,
+    runtimeVars,
     getRoot,
   );
   context.subscriptions.push(dashboard);

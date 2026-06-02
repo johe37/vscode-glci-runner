@@ -4,6 +4,7 @@ import { JobIndex } from "./jobIndex";
 import { JobFilter } from "./filter";
 import { RunHistory, RunRecord, RunStatus } from "./history";
 import { RunManager } from "./runManager";
+import { RuntimeVariables } from "./variables";
 import { GlciJob } from "./glci";
 
 /**
@@ -40,6 +41,7 @@ type Route =
   | { name: "home" }
   | { name: "jobs" }
   | { name: "pipelines" }
+  | { name: "variables" }
   | { name: "pipeline"; runId: string }
   | { name: "jobLog"; runId: string; job: string };
 
@@ -82,6 +84,7 @@ export class Dashboard {
     private readonly filter: JobFilter,
     private readonly history: RunHistory,
     private readonly runManager: RunManager,
+    private readonly variables: RuntimeVariables,
     private readonly getRoot: () => string,
   ) {
     // Keep the panel live as the underlying data changes.
@@ -90,6 +93,7 @@ export class Dashboard {
       this.index.onDidChange(refresh),
       this.filter.onDidChange(refresh),
       this.history.onDidChange(refresh),
+      this.variables.onDidChange(refresh),
       this.runManager.onDidChangeLive(refresh),
       // Stream a job's output straight to the open log view (no full re-render).
       this.runManager.onDidAppendJobLog((e) => this.onJobLogAppend(e)),
@@ -251,6 +255,14 @@ export class Dashboard {
       case "deletePipeline":
         vscode.commands.executeCommand("glci.deletePipeline", msg.id);
         return;
+      case "saveVariables":
+        if (msg.vars && typeof msg.vars === "object") {
+          this.variables.set(msg.vars as Record<string, string>);
+        }
+        return;
+      case "clearVariables":
+        this.variables.clear();
+        return;
       case "toggleNever":
         vscode.commands.executeCommand("glci.toggleHideNever");
         return;
@@ -305,6 +317,8 @@ export class Dashboard {
         return [home, jobs];
       case "pipelines":
         return [home, pipelines];
+      case "variables":
+        return [home, pipelines, { label: "Variables", route: this.route }];
       case "pipeline": {
         const runId = this.route.runId;
         const r = runs.find((x) => x.id === runId && x.kind === "pipeline");
@@ -369,6 +383,10 @@ export class Dashboard {
         hideSkipped: this.filter.isHidingSkipped,
         hasSkipConfig: this.filter.hasSkipConfig,
       },
+      variables: Object.entries(this.variables.all()).map(([key, value]) => ({
+        key,
+        value,
+      })),
     };
 
     let payload: Record<string, unknown> = {};
@@ -488,6 +506,8 @@ function titleFor(route: Route): string {
       return "Jobs";
     case "pipelines":
       return "Pipelines";
+    case "variables":
+      return "Variables";
     case "pipeline":
       return "Pipeline";
     case "jobLog":
@@ -678,6 +698,21 @@ body {
 .runrow .meta { color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .ractions { display: flex; gap: 6px; justify-content: flex-end; }
 .empty { color: var(--vscode-descriptionForeground); padding: 16px 4px; font-style: italic; }
+.hint { color: var(--vscode-descriptionForeground); font-size: 12px; margin: 0 0 14px; max-width: 70ch; }
+
+/* Variables editor */
+.var-editor { display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+.var-row { display: flex; align-items: center; gap: 8px; }
+.var-row input {
+  font: inherit; font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 4px; padding: 4px 8px;
+}
+.var-row .var-key { flex: 0 0 240px; }
+.var-row .var-val { flex: 1 1 auto; min-width: 0; }
+.var-row .var-eq { color: var(--vscode-descriptionForeground); }
+.var-actions { display: flex; gap: 8px; margin-top: 14px; max-width: 720px; }
 
 /* Inline job log viewer */
 .joblog-head {
@@ -971,6 +1006,8 @@ function renderPipelines(state) {
   const head = el("div", "view-head");
   head.appendChild(el("h2", null, "Pipelines"));
   head.appendChild(el("span", "spacer"));
+  const varCount = (state.variables || []).length;
+  head.appendChild(btn("⚙ Variables" + (varCount ? " (" + varCount + ")" : ""), "ghost", () => nav({ name: "variables" }), "Set CI variables for runs"));
   head.appendChild(btn("▶ Run pipeline", "primary", () => post("runPipeline"), "Run every job in order, like a real pipeline"));
   if ((state.pipelines || []).length) head.appendChild(btn("Clear all", "ghost danger", () => post("clearPipelines"), "Remove all pipeline runs and their saved logs"));
   c.appendChild(head);
@@ -1017,6 +1054,50 @@ function renderRunList(rows, kind) {
     list.appendChild(row);
   }
   return list;
+}
+
+// One KEY = value row in the variables editor. Edits live in the DOM; Save
+// scrapes the rows, so the render guard can keep the editor mounted (and the
+// caret intact) across the live updates that fire while a pipeline runs.
+function makeVarRow(k, v) {
+  const row = el("div", "var-row");
+  const key = el("input", "var-key");
+  key.placeholder = "KEY"; key.value = k || "";
+  key.spellcheck = false;
+  const eq = el("span", "var-eq", "=");
+  const val = el("input", "var-val");
+  val.placeholder = "value"; val.value = v || "";
+  val.spellcheck = false;
+  const rm = btn("✕", "ghost tiny", () => row.remove(), "Remove");
+  row.appendChild(key); row.appendChild(eq); row.appendChild(val); row.appendChild(rm);
+  return row;
+}
+function collectVars() {
+  const vars = {};
+  document.querySelectorAll("#varEditor .var-row").forEach((r) => {
+    const k = r.querySelector(".var-key").value.trim();
+    if (k) vars[k] = r.querySelector(".var-val").value;
+  });
+  return vars;
+}
+function renderVariables(state) {
+  const c = el("div", "content");
+  const head = el("div", "view-head");
+  head.appendChild(el("h2", null, "Pipeline variables"));
+  c.appendChild(head);
+  c.appendChild(el("p", "hint", "CI variables passed to every local run as --variable KEY=VALUE. They merge with glci.variables from settings (these win) and persist for this workspace. Saving re-evaluates which jobs run."));
+  const editor = el("div", "var-editor");
+  editor.id = "varEditor";
+  const vars = state.variables || [];
+  if (!vars.length) editor.appendChild(makeVarRow("", ""));
+  else vars.forEach((v) => editor.appendChild(makeVarRow(v.key, v.value)));
+  c.appendChild(editor);
+  const actions = el("div", "var-actions");
+  actions.appendChild(btn("+ Add variable", "tiny", () => editor.appendChild(makeVarRow("", ""))));
+  actions.appendChild(btn("Save", "primary tiny", () => { post("saveVariables", { vars: collectVars() }); nav({ name: "pipelines" }); }));
+  actions.appendChild(btn("Clear all", "ghost tiny danger", () => { editor.innerHTML = ""; editor.appendChild(makeVarRow("", "")); post("clearVariables"); }));
+  c.appendChild(actions);
+  return c;
 }
 
 function renderPipelineDetail(state) {
@@ -1108,6 +1189,10 @@ function render() {
     buildJobLogHeader(logView.head, current.jobLog);
     return;
   }
+  // Keep the variables editor mounted across live updates so edits/focus survive.
+  if (current.route.name === "variables" && document.getElementById("varEditor")) {
+    return;
+  }
   app.innerHTML = "";
   app.appendChild(renderTopbar(current));
   let view;
@@ -1115,6 +1200,7 @@ function render() {
     case "home": view = renderHome(current); break;
     case "jobs": view = renderJobs(current); break;
     case "pipelines": view = renderPipelines(current); break;
+    case "variables": view = renderVariables(current); break;
     case "pipeline": view = renderPipelineDetail(current); break;
     case "jobLog": view = renderJobLog(current); break;
     default: view = renderHome(current);
