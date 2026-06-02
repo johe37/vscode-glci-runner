@@ -87,9 +87,10 @@ export class RunManager {
   /**
    * Run the whole pipeline. `jobNames` (the current job index) lets the output
    * parser attribute each line to the right job for the live board overview.
+   * Returns the run's history id so callers can navigate straight to its detail.
    */
-  runPipeline(jobNames: string[]): void {
-    this.start(
+  runPipeline(jobNames: string[]): string {
+    return this.start(
       "pipeline",
       "pipeline",
       "pipeline",
@@ -109,6 +110,11 @@ export class RunManager {
       out[name] = job.status;
     }
     return out;
+  }
+
+  /** One job's captured slice of a pipeline run, or undefined if not tracked. */
+  jobLogText(runId: string, jobName: string): string | undefined {
+    return this.pipelines.get(runId)?.jobs.get(jobName)?.log;
   }
 
   /** Dump one job's slice of a pipeline run into the run-log channel. */
@@ -253,7 +259,7 @@ export class RunManager {
     kind: RunKind,
     argv: string[],
     liveJobs?: string[],
-  ): void {
+  ): string {
     const id = this.history.start({ target, kind, label });
 
     if (liveJobs) {
@@ -334,6 +340,7 @@ export class RunManager {
 
     const terminal = this.makeTerminal(label, id, pty);
     terminal.show();
+    return id;
   }
 
   /** Record the terminal outcome and surface failures so they can't be missed. */
