@@ -23,12 +23,54 @@ export interface GlciJob {
   rules?: JobRule[];
 }
 
-/** Suppress the predefined-variable warnings that otherwise pollute stdout. */
-const LIST_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
-  GCL_IGNORE_PREDEFINED_VARS: "FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR",
-  FORCE_COLOR: "0",
-};
+/**
+ * Comma-separated value for `GCL_IGNORE_PREDEFINED_VARS`. It silences
+ * gitlab-ci-local's "Avoid overriding predefined variables" warning, which is
+ * critical: that warning prints to **stdout** and contains `[VAR_NAME]`, so it
+ * would otherwise corrupt the `--list-json` payload (the parser slices from the
+ * first `[`). We always silence the umask FF, honor any names already in the
+ * environment, and — so users can override `CI_PIPELINE_SOURCE`,
+ * `CI_COMMIT_BRANCH`, etc. via `glci.variables` to make `rules:` evaluate as a
+ * real pipeline would — add every key from `glci.variables`.
+ */
+function ignorePredefinedVars(): string {
+  const names = new Set<string>(["FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR"]);
+  for (const n of (process.env.GCL_IGNORE_PREDEFINED_VARS ?? "").split(",")) {
+    if (n.trim()) {
+      names.add(n.trim());
+    }
+  }
+  const vars =
+    vscode.workspace.getConfiguration("glci").get<Record<string, string>>("variables") ??
+    {};
+  for (const key of Object.keys(vars)) {
+    names.add(key);
+  }
+  return [...names].join(",");
+}
+
+/** Environment for listing/preview/validate. Colors off; JSON-safe stdout. */
+function listEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(),
+    FORCE_COLOR: "0",
+  };
+}
+
+/**
+ * Environment for actual job runs. Same predefined-var suppression as listing,
+ * but colors are *forced on* so the captured output rendered in the
+ * pseudoterminal keeps gitlab-ci-local's ANSI coloring (the piped stdout is not
+ * a TTY, so the binary would otherwise drop color).
+ */
+function runEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(),
+    FORCE_COLOR: "1",
+  };
+}
 
 function binaryPath(): string {
   const configured = vscode.workspace
@@ -71,14 +113,6 @@ function globalExecArgs(): string[] {
 }
 
 /**
- * Global tokens for the terminal command line. Variables are shell-quoted;
- * `extraArgs` are passed verbatim so the shell expands `$HOME` and friends.
- */
-function globalTerminalTokens(): string[] {
-  return [...variableArgs().map(shellQuote), ...extraArgs()];
-}
-
-/**
  * Extract the first JSON array from mixed output. `gitlab-ci-local` may print
  * warnings before the JSON payload, so we slice from the first `[`.
  */
@@ -105,7 +139,7 @@ export class Glci {
   async checkBinary(): Promise<string> {
     const { stdout } = await execFileAsync(binaryPath(), ["--version"], {
       cwd: this.root(),
-      env: LIST_ENV,
+      env: listEnv(),
     });
     return stdout.trim();
   }
@@ -120,7 +154,7 @@ export class Glci {
       const { stdout } = await execFileAsync(
         bin,
         ["--list-json", ...globalExecArgs()],
-        { cwd, env: LIST_ENV, maxBuffer: 32 * 1024 * 1024 },
+        { cwd, env: listEnv(), maxBuffer: 32 * 1024 * 1024 },
       );
       return parseListJson(stdout);
     } catch (err) {
@@ -139,18 +173,36 @@ export class Glci {
     }
   }
 
-  /** Run a single job in an integrated terminal. */
-  runJob(name: string, opts: { withNeeds?: boolean } = {}): void {
-    const args = [shellQuote(name)];
+  /** The resolved binary name/path (PATH lookup or configured absolute path). */
+  get binary(): string {
+    return binaryPath();
+  }
+
+  /** The cwd every invocation runs in (the resolved project root). */
+  get cwd(): string {
+    return this.root();
+  }
+
+  /** Environment for job runs (predefined-var suppression + forced color). */
+  get runEnv(): NodeJS.ProcessEnv {
+    return runEnv();
+  }
+
+  /**
+   * Argv for running a single job via a non-shell `spawn`. Mirrors the listing
+   * path: global variables + env-expanded extraArgs are appended.
+   */
+  buildRunArgs(name: string, opts: { withNeeds?: boolean } = {}): string[] {
+    const args = [name];
     if (opts.withNeeds) {
       args.push("--needs");
     }
-    this.sendToTerminal(name, args);
+    return [...args, ...globalExecArgs()];
   }
 
-  /** Run an entire stage in an integrated terminal. */
-  runStage(stage: string): void {
-    this.sendToTerminal(`stage:${stage}`, ["--stage", shellQuote(stage)]);
+  /** Argv for running an entire stage via a non-shell `spawn`. */
+  buildStageArgs(stage: string): string[] {
+    return ["--stage", stage, ...globalExecArgs()];
   }
 
   /** Run `--preview` / `--validate` and stream output into a channel. */
@@ -165,7 +217,7 @@ export class Glci {
       const { stdout, stderr } = await execFileAsync(
         binaryPath(),
         [...extraFlags, ...globalExecArgs()],
-        { cwd: this.root(), env: LIST_ENV, maxBuffer: 64 * 1024 * 1024 },
+        { cwd: this.root(), env: listEnv(), maxBuffer: 64 * 1024 * 1024 },
       );
       if (stderr.trim()) {
         channel.appendLine(stderr.trimEnd());
@@ -175,28 +227,4 @@ export class Glci {
       channel.appendLine(`Error: ${(err as Error).message}`);
     }
   }
-
-  private sendToTerminal(title: string, args: string[]): void {
-    const perRun = vscode.workspace
-      .getConfiguration("glci")
-      .get<boolean>("terminalPerRun");
-    const name = perRun ? `glci: ${title}` : "gitlab-ci-local";
-    let terminal = perRun
-      ? undefined
-      : vscode.window.terminals.find((t) => t.name === name);
-    if (!terminal) {
-      terminal = vscode.window.createTerminal({ name, cwd: this.root() });
-    }
-    terminal.show();
-    const cmd = [binaryPath(), ...args, ...globalTerminalTokens()].join(" ");
-    terminal.sendText(cmd);
-  }
-}
-
-/** Minimal POSIX single-quote escaping for terminal command construction. */
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_\-./=]+$/.test(value)) {
-    return value;
-  }
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

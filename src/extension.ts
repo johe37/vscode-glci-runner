@@ -6,6 +6,9 @@ import { JobIndex } from "./jobIndex";
 import { JobFilter } from "./filter";
 import { JobCodeLensProvider } from "./codeLens";
 import { JobTreeProvider } from "./treeView";
+import { RunHistory } from "./history";
+import { RunManager } from "./runManager";
+import { Dashboard } from "./dashboard";
 
 /** Expand a leading `~` and `$HOME`/`${HOME}` to the user's home directory. */
 function expandHome(p: string): string {
@@ -45,13 +48,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const glci = new Glci(getRoot);
   const filter = new JobFilter(context.workspaceState, getRoot);
   const index = new JobIndex(glci, getRoot);
+  const history = new RunHistory(context.workspaceState);
   const output = vscode.window.createOutputChannel("GitLab CI Local");
-  context.subscriptions.push(filter, index, output);
+  // Dedicated channel that always holds the captured output of a chosen run, so
+  // a failure is readable even after its terminal is closed.
+  const runLog = vscode.window.createOutputChannel("GitLab CI Local — Run Log");
+  const runManager = new RunManager(glci, history, runLog);
+  context.subscriptions.push(filter, index, history, output, runLog);
+
+  // Modern editor-area pipeline view (opened on demand).
+  const dashboard = new Dashboard(context, index, filter, history, getRoot);
+  context.subscriptions.push(dashboard);
 
   await filter.reloadSkipConfig();
 
   // Tree view. Its description shows the active project root for quick debugging.
-  const treeProvider = new JobTreeProvider(index, filter);
+  const treeProvider = new JobTreeProvider(index, filter, history);
   const treeView = vscode.window.createTreeView("glci.jobs", {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
@@ -88,13 +100,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("glci.runJob", (arg) => {
       const name = jobNameOf(arg);
       if (name) {
-        glci.runJob(name);
+        runManager.runJob(name);
       }
     }),
     vscode.commands.registerCommand("glci.runJobWithNeeds", (arg) => {
       const name = jobNameOf(arg);
       if (name) {
-        glci.runJob(name, { withNeeds: true });
+        runManager.runJob(name, { withNeeds: true });
       }
     }),
     vscode.commands.registerCommand("glci.runStage", (arg) => {
@@ -103,9 +115,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ? (arg as { stage: string }).stage
           : undefined;
       if (stage) {
-        glci.runStage(stage);
+        runManager.runStage(stage);
       }
     }),
+    vscode.commands.registerCommand("glci.cancelRun", (id) => {
+      if (typeof id === "string") {
+        runManager.cancel(id);
+      }
+    }),
+    vscode.commands.registerCommand("glci.showRunLog", (id) => {
+      if (typeof id === "string") {
+        runManager.showLog(id);
+      }
+    }),
+    vscode.commands.registerCommand("glci.openPipeline", () => dashboard.show()),
+    vscode.commands.registerCommand("glci.clearHistory", () => history.clear()),
     vscode.commands.registerCommand("glci.preview", () =>
       glci.runToChannel(output, ["--preview"], "preview"),
     ),
