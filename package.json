@@ -176,6 +176,24 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "glci.clearJobHistory",
+        "title": "Clear Job Run History",
+        "category": "GitLab CI Local",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "glci.clearPipelines",
+        "title": "Clear Pipeline Runs",
+        "category": "GitLab CI Local",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "glci.deletePipeline",
+        "title": "Delete Pipeline Run",
+        "category": "GitLab CI Local",
+        "icon": "$(trash)"
+      },
+      {
         "command": "glci.cancelRun",
         "title": "Cancel Run",
         "category": "GitLab CI Local",
@@ -310,6 +328,10 @@
         },
         {
           "command": "glci.showRunLog",
+          "when": "false"
+        },
+        {
+          "command": "glci.deletePipeline",
           "when": "false"
         }
       ]

@@ -15,6 +15,11 @@ export interface RunRecord {
   kind: RunKind;
   /** Human label shown in the UI (e.g. `unit-tests` or `stage: test`). */
   label: string;
+  /**
+   * Sequential, never-reused run number (1-based) shown GitLab-style as `#N`.
+   * Set only for `pipeline` runs; undefined for individual job/stage runs.
+   */
+  number?: number;
   /** Epoch ms when the run started. */
   startTime: number;
   /** Epoch ms when the run finished; unset while running. */
@@ -25,6 +30,8 @@ export interface RunRecord {
 }
 
 const KEY = "glci.runHistory";
+/** Monotonic pipeline-run counter, persisted so numbers never reset/reuse. */
+const SEQ_KEY = "glci.pipelineSeq";
 /** Cap the stored history so workspaceState stays small. */
 const MAX = 200;
 
@@ -36,12 +43,15 @@ const MAX = 200;
 export class RunHistory {
   private records: RunRecord[];
   private seq = 0;
+  /** Highest pipeline number handed out so far (persisted across sessions). */
+  private pipelineSeq: number;
 
   private readonly onChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.onChangeEmitter.event;
 
   constructor(private readonly state: vscode.Memento) {
     this.records = state.get<RunRecord[]>(KEY, []);
+    this.pipelineSeq = state.get<number>(SEQ_KEY, 0);
     // Any run still marked `running` is stale from a previous session (the
     // process is long gone) — settle it so the UI never shows a phantom spinner.
     let changed = false;
@@ -66,6 +76,9 @@ export class RunHistory {
       startTime: Date.now(),
       status: "running",
     };
+    if (rec.kind === "pipeline") {
+      record.number = ++this.pipelineSeq;
+    }
     this.records.unshift(record);
     if (this.records.length > MAX) {
       this.records.length = MAX;
@@ -101,8 +114,30 @@ export class RunHistory {
     void this.persist();
   }
 
+  /** Remove every record matching `pred`; returns the removed ids. */
+  removeWhere(pred: (r: RunRecord) => boolean): string[] {
+    const removed: string[] = [];
+    this.records = this.records.filter((r) => {
+      if (pred(r)) {
+        removed.push(r.id);
+        return false;
+      }
+      return true;
+    });
+    if (removed.length) {
+      void this.persist();
+    }
+    return removed;
+  }
+
+  /** Remove a single record by id. */
+  remove(id: string): void {
+    this.removeWhere((r) => r.id === id);
+  }
+
   private async persist(): Promise<void> {
     await this.state.update(KEY, this.records);
+    await this.state.update(SEQ_KEY, this.pipelineSeq);
     this.onChangeEmitter.fire();
   }
 

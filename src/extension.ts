@@ -167,6 +167,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       dashboard.show({ name: "pipelines" }),
     ),
     vscode.commands.registerCommand("glci.clearHistory", () => history.clear()),
+    vscode.commands.registerCommand("glci.clearJobHistory", () =>
+      history.removeWhere((r) => r.kind !== "pipeline"),
+    ),
+    vscode.commands.registerCommand("glci.clearPipelines", async () => {
+      const choice = await vscode.window.showWarningMessage(
+        "Clear all local pipeline runs? Their saved logs will be deleted too.",
+        { modal: true },
+        "Clear all",
+      );
+      if (choice !== "Clear all") {
+        return;
+      }
+      const ids = history.removeWhere((r) => r.kind === "pipeline");
+      await Promise.all(ids.map((id) => pipelineStore.delete(id)));
+    }),
+    vscode.commands.registerCommand("glci.deletePipeline", async (id) => {
+      if (typeof id !== "string") {
+        return;
+      }
+      history.remove(id);
+      await pipelineStore.delete(id);
+    }),
     vscode.commands.registerCommand("glci.preview", () =>
       glci.runToChannel(output, ["--preview"], "preview"),
     ),
