@@ -1,0 +1,269 @@
+{
+  "name": "gitlab-ci-local-runner",
+  "displayName": "GitLab CI Local Runner",
+  "description": "Discover GitLab CI jobs and run them locally with one click via gitlab-ci-local.",
+  "version": "0.1.0",
+  "publisher": "basalt",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "gitlab",
+    "ci",
+    "gitlab-ci-local",
+    "pipeline"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/.gitlab-ci.yml",
+    "workspaceContains:**/.gitlab-ci.yaml"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "GitLab CI Local Runner",
+      "properties": {
+        "glci.projectRoot": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Project root that gitlab-ci-local runs against (where `.gitlab-ci.yml` lives). Leave empty to use the workspace folder. Accepts an absolute path, a `~`/`$HOME`-prefixed path, or a path relative to the workspace folder. Useful when the workspace is a monorepo/parent of the CI project, or for debugging a different checkout."
+        },
+        "glci.binaryPath": {
+          "type": "string",
+          "default": "gitlab-ci-local",
+          "description": "Path to the gitlab-ci-local executable. Defaults to looking it up on PATH."
+        },
+        "glci.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Raw global arguments appended to every gitlab-ci-local invocation (listing, preview, and runs). Each array element is one token. In the terminal these are passed **verbatim**, so the shell expands `$HOME` etc.; in non-shell calls `$VAR`/`${VAR}` are expanded against the environment. Example: `[\"--volume\", \"$HOME/.basalt:/root/.basalt\"]`."
+        },
+        "glci.variables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "markdownDescription": "Global CI variables applied to every gitlab-ci-local invocation as `--variable KEY=VALUE`. Example: `{ \"CRATON_NEXUS_CACERT\": \"/root/.basalt/basalt-chain.crt\" }`."
+        },
+        "glci.ciFileGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".gitlab-ci.yml",
+            ".gitlab-ci.yaml",
+            ".gitlab/**/*.yml",
+            ".gitlab/**/*.yaml"
+          ],
+          "description": "Glob patterns (relative to the workspace root) scanned for CI job definitions."
+        },
+        "glci.hideNeverByDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide jobs with `when: never` when the workspace is first opened."
+        },
+        "glci.terminalPerRun": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open a fresh terminal for every run instead of reusing one shared terminal."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "glci",
+          "title": "GitLab CI Local",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "glci": [
+        {
+          "id": "glci.jobs",
+          "name": "Jobs",
+          "icon": "media/icon.svg",
+          "contextualTitle": "GitLab CI Local"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "glci.jobs",
+        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
+      }
+    ],
+    "commands": [
+      {
+        "command": "glci.runJob",
+        "title": "Run Job",
+        "category": "GitLab CI Local",
+        "icon": "$(play)"
+      },
+      {
+        "command": "glci.runJobWithNeeds",
+        "title": "Run Job (with needs)",
+        "category": "GitLab CI Local",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "glci.runStage",
+        "title": "Run Stage",
+        "category": "GitLab CI Local",
+        "icon": "$(play)"
+      },
+      {
+        "command": "glci.preview",
+        "title": "Preview Expanded Pipeline",
+        "category": "GitLab CI Local",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "glci.validate",
+        "title": "Validate Pipeline",
+        "category": "GitLab CI Local",
+        "icon": "$(check)"
+      },
+      {
+        "command": "glci.refresh",
+        "title": "Refresh Jobs",
+        "category": "GitLab CI Local",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "glci.setProjectRoot",
+        "title": "Set Project Root...",
+        "category": "GitLab CI Local",
+        "icon": "$(root-folder)"
+      },
+      {
+        "command": "glci.toggleHideNever",
+        "title": "Toggle: Hide 'when: never' Jobs",
+        "category": "GitLab CI Local",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "glci.toggleHideSkipped",
+        "title": "Toggle: Hide Skipped Jobs (.glciconfig.toml)",
+        "category": "GitLab CI Local",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "glci.goToDefinition",
+        "title": "Go to Definition",
+        "category": "GitLab CI Local",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "glci.refresh",
+          "when": "view == glci.jobs",
+          "group": "navigation@1"
+        },
+        {
+          "command": "glci.toggleHideNever",
+          "when": "view == glci.jobs",
+          "group": "navigation@2"
+        },
+        {
+          "command": "glci.toggleHideSkipped",
+          "when": "view == glci.jobs",
+          "group": "navigation@3"
+        },
+        {
+          "command": "glci.setProjectRoot",
+          "when": "view == glci.jobs",
+          "group": "1_pipeline@0"
+        },
+        {
+          "command": "glci.preview",
+          "when": "view == glci.jobs",
+          "group": "1_pipeline@1"
+        },
+        {
+          "command": "glci.validate",
+          "when": "view == glci.jobs",
+          "group": "1_pipeline@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "glci.runJob",
+          "when": "view == glci.jobs && viewItem == glciJob",
+          "group": "inline@1"
+        },
+        {
+          "command": "glci.runJobWithNeeds",
+          "when": "view == glci.jobs && viewItem == glciJob",
+          "group": "inline@2"
+        },
+        {
+          "command": "glci.runStage",
+          "when": "view == glci.jobs && viewItem == glciStage",
+          "group": "inline@1"
+        },
+        {
+          "command": "glci.runJob",
+          "when": "view == glci.jobs && viewItem == glciJob",
+          "group": "1_run@1"
+        },
+        {
+          "command": "glci.runJobWithNeeds",
+          "when": "view == glci.jobs && viewItem == glciJob",
+          "group": "1_run@2"
+        },
+        {
+          "command": "glci.goToDefinition",
+          "when": "view == glci.jobs && viewItem == glciJob",
+          "group": "2_nav@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "glci.runJob",
+          "when": "false"
+        },
+        {
+          "command": "glci.runJobWithNeeds",
+          "when": "false"
+        },
+        {
+          "command": "glci.runStage",
+          "when": "false"
+        },
+        {
+          "command": "glci.goToDefinition",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc --noEmit && node esbuild.js",
+    "package": "tsc --noEmit && node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "yaml": "^2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.5"
+  }
+}
