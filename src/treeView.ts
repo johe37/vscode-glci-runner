@@ -1,8 +1,24 @@
 import * as vscode from "vscode";
 import { JobIndex } from "./jobIndex";
 import { JobFilter } from "./filter";
-import { RunHistory, RunStatus } from "./history";
+import { RunHistory, RunRecord, RunStatus } from "./history";
 import { GlciJob } from "./glci";
+
+type RootKey = "jobs" | "pipelines";
+
+/** Top-level section header ("Jobs" / "Pipelines"). */
+class RootItem extends vscode.TreeItem {
+  constructor(public readonly key: RootKey) {
+    super(
+      key === "jobs" ? "Jobs" : "Pipelines",
+      vscode.TreeItemCollapsibleState.Expanded,
+    );
+    this.contextValue = `glciRoot_${key}`;
+    this.iconPath = new vscode.ThemeIcon(
+      key === "jobs" ? "briefcase" : "rocket",
+    );
+  }
+}
 
 /** A stage grouping node in the tree. */
 class StageItem extends vscode.TreeItem {
@@ -37,12 +53,28 @@ class JobItem extends vscode.TreeItem {
   }
 }
 
-type Node = StageItem | JobItem;
+/** A pipeline run leaf node. */
+class PipelineItem extends vscode.TreeItem {
+  constructor(public readonly record: RunRecord) {
+    const label = record.number != null ? `#${record.number}` : record.label;
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = "glciPipeline";
+    this.description = pipelineDescription(record);
+    this.tooltip = buildPipelineTooltip(record);
+    this.iconPath = pipelineIcon(record.status);
+    this.command = {
+      title: "Open Pipelines",
+      command: "glci.openPipelines",
+    };
+  }
+}
+
+type Node = RootItem | StageItem | JobItem | PipelineItem;
 
 /**
- * Sidebar tree of jobs grouped by stage. Top-level children are stages; their
- * children are the visible jobs in that stage. Visibility follows the shared
- * {@link JobFilter}.
+ * Sidebar tree with two top-level sections: Jobs (grouped by stage) and
+ * Pipelines (whole-pipeline runs, newest first). Visibility of jobs follows
+ * the shared {@link JobFilter}.
  */
 export class JobTreeProvider implements vscode.TreeDataProvider<Node> {
   private readonly onChangeEmitter = new vscode.EventEmitter<void>();
@@ -64,6 +96,9 @@ export class JobTreeProvider implements vscode.TreeDataProvider<Node> {
 
   getChildren(element?: Node): Node[] {
     if (!element) {
+      return [new RootItem("jobs"), new RootItem("pipelines")];
+    }
+    if (element instanceof RootItem && element.key === "jobs") {
       return this.index
         .byStage()
         .map((g) => ({
@@ -73,12 +108,21 @@ export class JobTreeProvider implements vscode.TreeDataProvider<Node> {
         .filter((g) => g.jobs.length > 0)
         .map((g) => new StageItem(g.stage, g.jobs.length));
     }
+    if (element instanceof RootItem && element.key === "pipelines") {
+      return this.history
+        .all()
+        .filter((r) => r.kind === "pipeline")
+        .map((r) => new PipelineItem(r));
+    }
     if (element instanceof StageItem) {
-      return this.index
-        .byStage()
-        .find((g) => g.stage === element.stage)
-        ?.jobs.filter((j) => this.filter.isVisible(j))
-        .map((j) => new JobItem(j, this.history.latestFor(j.name)?.status)) ?? [];
+      return (
+        this.index
+          .byStage()
+          .find((g) => g.stage === element.stage)
+          ?.jobs.filter((j) => this.filter.isVisible(j))
+          .map((j) => new JobItem(j, this.history.latestFor(j.name)?.status)) ??
+        []
+      );
     }
     return [];
   }
@@ -131,6 +175,55 @@ function iconFor(job: GlciJob, lastStatus?: RunStatus): vscode.ThemeIcon {
     return new vscode.ThemeIcon("person");
   }
   return new vscode.ThemeIcon("play-circle");
+}
+
+function pipelineDescription(record: RunRecord): string {
+  const parts: string[] = [record.status];
+  if (record.endTime) {
+    const secs = Math.round((record.endTime - record.startTime) / 1000);
+    parts.push(`${secs}s`);
+  }
+  return parts.join(" · ");
+}
+
+function pipelineIcon(status: RunStatus): vscode.ThemeIcon {
+  switch (status) {
+    case "running":
+      return new vscode.ThemeIcon(
+        "loading~spin",
+        new vscode.ThemeColor("charts.blue"),
+      );
+    case "passed":
+      return new vscode.ThemeIcon(
+        "pass-filled",
+        new vscode.ThemeColor("testing.iconPassed"),
+      );
+    case "failed":
+      return new vscode.ThemeIcon(
+        "error",
+        new vscode.ThemeColor("testing.iconFailed"),
+      );
+    case "canceled":
+      return new vscode.ThemeIcon(
+        "circle-slash",
+        new vscode.ThemeColor("testing.iconSkipped"),
+      );
+  }
+}
+
+function buildPipelineTooltip(record: RunRecord): vscode.MarkdownString {
+  const md = new vscode.MarkdownString();
+  const label =
+    record.number != null ? `Pipeline #${record.number}` : record.label;
+  md.appendMarkdown(`**${label}**\n\n`);
+  md.appendMarkdown(`- status: \`${record.status}\`\n`);
+  const started = new Date(record.startTime).toLocaleString();
+  md.appendMarkdown(`- started: ${started}\n`);
+  if (record.endTime) {
+    const secs = Math.round((record.endTime - record.startTime) / 1000);
+    md.appendMarkdown(`- duration: ${secs}s\n`);
+  }
+  return md;
 }
 
 function buildTooltip(job: GlciJob): vscode.MarkdownString {
