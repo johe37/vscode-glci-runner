@@ -205,6 +205,15 @@ export class Glci {
     return ["--stage", stage, ...globalExecArgs()];
   }
 
+  /**
+   * Argv for running the whole pipeline. With no job name and no `--stage`,
+   * gitlab-ci-local executes every job in stage order honoring `needs` — i.e.
+   * exactly like a real pipeline run.
+   */
+  buildPipelineArgs(): string[] {
+    return [...globalExecArgs()];
+  }
+
   /** Run `--preview` / `--validate` and stream output into a channel. */
   async runToChannel(
     channel: vscode.OutputChannel,

@@ -122,6 +122,12 @@
         "icon": "$(play)"
       },
       {
+        "command": "glci.runPipeline",
+        "title": "Run Pipeline",
+        "category": "GitLab CI Local",
+        "icon": "$(run-all)"
+      },
+      {
         "command": "glci.preview",
         "title": "Preview Expanded Pipeline",
         "category": "GitLab CI Local",
@@ -211,19 +217,24 @@
           "group": "navigation@3"
         },
         {
-          "command": "glci.setProjectRoot",
+          "command": "glci.runPipeline",
           "when": "view == glci.jobs",
           "group": "1_pipeline@0"
         },
         {
-          "command": "glci.preview",
+          "command": "glci.setProjectRoot",
           "when": "view == glci.jobs",
           "group": "1_pipeline@1"
         },
         {
-          "command": "glci.validate",
+          "command": "glci.preview",
           "when": "view == glci.jobs",
           "group": "1_pipeline@2"
+        },
+        {
+          "command": "glci.validate",
+          "when": "view == glci.jobs",
+          "group": "1_pipeline@3"
         }
       ],
       "view/item/context": [

@@ -54,10 +54,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // a failure is readable even after its terminal is closed.
   const runLog = vscode.window.createOutputChannel("GitLab CI Local — Run Log");
   const runManager = new RunManager(glci, history, runLog);
-  context.subscriptions.push(filter, index, history, output, runLog);
+  context.subscriptions.push(filter, index, history, output, runLog, runManager);
 
   // Modern editor-area pipeline view (opened on demand).
-  const dashboard = new Dashboard(context, index, filter, history, getRoot);
+  const dashboard = new Dashboard(
+    context,
+    index,
+    filter,
+    history,
+    runManager,
+    getRoot,
+  );
   context.subscriptions.push(dashboard);
 
   await filter.reloadSkipConfig();
@@ -128,6 +135,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         runManager.showLog(id);
       }
     }),
+    vscode.commands.registerCommand("glci.runPipeline", () =>
+      runManager.runPipeline(index.getJobs().map((j) => j.name)),
+    ),
     vscode.commands.registerCommand("glci.openPipeline", () => dashboard.show()),
     vscode.commands.registerCommand("glci.clearHistory", () => history.clear()),
     vscode.commands.registerCommand("glci.preview", () =>

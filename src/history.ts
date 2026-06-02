@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
-/** What was launched: a single job, a job with its `needs`, or a whole stage. */
-export type RunKind = "job" | "job-needs" | "stage";
+/** What was launched: a single job, a job with its `needs`, a whole stage, or the entire pipeline. */
+export type RunKind = "job" | "job-needs" | "stage" | "pipeline";
 
 /** Lifecycle state of a run. `running` is the only non-terminal state. */
 export type RunStatus = "running" | "passed" | "failed" | "canceled";

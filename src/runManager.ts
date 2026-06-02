@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { spawn, ChildProcess } from "node:child_process";
 import { Glci } from "./glci";
-import { RunHistory, RunKind } from "./history";
+import { RunHistory, RunKind, RunStatus } from "./history";
 
 /** Convert bare `\n` line endings to `\r\n` so a pseudoterminal renders them. */
 function toCrlf(text: string): string {
@@ -27,6 +27,25 @@ function stripAnsi(text: string): string {
 /** Cap a single captured run log (keep the tail when it overflows). */
 const MAX_LOG = 1_000_000;
 
+/** Per-job live state parsed out of a pipeline run's combined output. */
+interface LiveJob {
+  status: RunStatus;
+  /** This job's slice of the pipeline output (prefix stripped, ANSI stripped). */
+  log: string;
+}
+
+/**
+ * Live state for one whole-pipeline run. {@link LivePipeline.names} is sorted
+ * longest-first so prefix matching attributes a line to the most specific job
+ * name (e.g. `test-2` wins over `test`). {@link LivePipeline.buf} holds the
+ * partial trailing line between chunks.
+ */
+interface LivePipeline {
+  names: string[];
+  jobs: Map<string, LiveJob>;
+  buf: string;
+}
+
 /**
  * Runs jobs/stages by spawning `gitlab-ci-local` and piping its output into a
  * {@link vscode.Pseudoterminal} (live, colored, `Ctrl-C`-able) while capturing
@@ -43,6 +62,11 @@ export class RunManager {
   private readonly logs = new Map<string, { label: string; text: string }>();
   /** The reused terminal when `terminalPerRun` is off. */
   private shared?: { terminal: vscode.Terminal; id: string; passed: boolean };
+  /** Parsed per-job live state, keyed by the pipeline run's history id. */
+  private readonly pipelines = new Map<string, LivePipeline>();
+  /** Fires when a pipeline run's per-job status changes (drives the dashboard). */
+  private readonly liveEmitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeLive = this.liveEmitter.event;
 
   constructor(
     private readonly glci: Glci,
@@ -58,6 +82,136 @@ export class RunManager {
 
   runStage(stage: string): void {
     this.start(`stage: ${stage}`, stage, "stage", this.glci.buildStageArgs(stage));
+  }
+
+  /**
+   * Run the whole pipeline. `jobNames` (the current job index) lets the output
+   * parser attribute each line to the right job for the live board overview.
+   */
+  runPipeline(jobNames: string[]): void {
+    this.start(
+      "pipeline",
+      "pipeline",
+      "pipeline",
+      this.glci.buildPipelineArgs(),
+      jobNames,
+    );
+  }
+
+  /** Per-job status for a pipeline run, or undefined if it has no live state. */
+  pipelineStatuses(runId: string): Record<string, RunStatus> | undefined {
+    const p = this.pipelines.get(runId);
+    if (!p) {
+      return undefined;
+    }
+    const out: Record<string, RunStatus> = {};
+    for (const [name, job] of p.jobs) {
+      out[name] = job.status;
+    }
+    return out;
+  }
+
+  /** Dump one job's slice of a pipeline run into the run-log channel. */
+  showJobLog(runId: string, jobName: string): void {
+    const job = this.pipelines.get(runId)?.jobs.get(jobName);
+    this.logChannel.clear();
+    if (!job) {
+      this.logChannel.appendLine(
+        `No captured output for "${jobName}" in this pipeline run yet.`,
+      );
+    } else {
+      this.logChannel.appendLine(`=== ${jobName} (pipeline run) ===`);
+      this.logChannel.append(job.log);
+    }
+    this.logChannel.show(true);
+  }
+
+  /**
+   * Feed a chunk of a pipeline run's combined output through the line parser.
+   * Buffers the partial trailing line and fires {@link liveEmitter} once per
+   * chunk if any job's status changed.
+   */
+  private feedLive(id: string, chunk: string): void {
+    const p = this.pipelines.get(id);
+    if (!p) {
+      return;
+    }
+    p.buf += chunk;
+    let changed = false;
+    let nl: number;
+    while ((nl = p.buf.indexOf("\n")) !== -1) {
+      const raw = p.buf.slice(0, nl);
+      p.buf = p.buf.slice(nl + 1);
+      const line = stripAnsi(raw).replace(/\r$/, "");
+      if (this.parseLine(p, line)) {
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.liveEmitter.fire();
+    }
+  }
+
+  /**
+   * Classify one (ANSI-stripped) output line and update per-job state. Returns
+   * true if a job appeared or changed status. gitlab-ci-local prefixes each
+   * job line with the (space-padded) job name; the trailing summary uses
+   * ` PASS  <job>` / ` FAIL  <job>`.
+   */
+  private parseLine(p: LivePipeline, line: string): boolean {
+    const summary = line.match(/^\s+(PASS|FAIL)\s+(.+?)\s*$/);
+    if (summary) {
+      const name = summary[2].trim();
+      if (!p.names.includes(name)) {
+        return false;
+      }
+      const job = this.ensureJob(p, name);
+      return this.setStatus(job, summary[1] === "PASS" ? "passed" : "failed");
+    }
+
+    for (const name of p.names) {
+      if (
+        line.startsWith(name) &&
+        (line.length === name.length || line[name.length] === " ")
+      ) {
+        const rest = line.slice(name.length).trimStart();
+        const isNew = !p.jobs.has(name);
+        const job = this.ensureJob(p, name);
+        job.log += rest + "\n";
+        if (job.log.length > MAX_LOG) {
+          job.log = job.log.slice(job.log.length - MAX_LOG);
+        }
+        let changed = isNew;
+        if (rest.startsWith("starting ")) {
+          changed = this.setStatus(job, "running") || changed;
+        } else if (rest.startsWith("finished in")) {
+          changed =
+            this.setStatus(job, /FAIL/.test(rest) ? "failed" : "passed") ||
+            changed;
+        }
+        return changed;
+      }
+    }
+    return false;
+  }
+
+  /** Get or create a job's live entry (new jobs start as `running`). */
+  private ensureJob(p: LivePipeline, name: string): LiveJob {
+    let job = p.jobs.get(name);
+    if (!job) {
+      job = { status: "running", log: "" };
+      p.jobs.set(name, job);
+    }
+    return job;
+  }
+
+  /** Set a job's status; returns true only if it actually changed. */
+  private setStatus(job: LiveJob, status: RunStatus): boolean {
+    if (job.status === status) {
+      return false;
+    }
+    job.status = status;
+    return true;
   }
 
   /** Send SIGINT to a live run; the close handler records it as canceled. */
@@ -98,8 +252,18 @@ export class RunManager {
     target: string,
     kind: RunKind,
     argv: string[],
+    liveJobs?: string[],
   ): void {
     const id = this.history.start({ target, kind, label });
+
+    if (liveJobs) {
+      this.pipelines.set(id, {
+        // Longest-first so prefix matching prefers the most specific job name.
+        names: [...liveJobs].sort((a, b) => b.length - a.length),
+        jobs: new Map(),
+        buf: "",
+      });
+    }
 
     const writeEmitter = new vscode.EventEmitter<string>();
     const closeEmitter = new vscode.EventEmitter<number | void>();
@@ -123,6 +287,7 @@ export class RunManager {
           const text = d.toString();
           writeEmitter.fire(toCrlf(text));
           this.appendLog(id, label, text);
+          this.feedLive(id, text);
         };
         child.stdout?.on("data", onData);
         child.stderr?.on("data", onData);
@@ -179,6 +344,19 @@ export class RunManager {
   ): void {
     this.procs.delete(id);
     this.history.finish(id, status, code);
+    // A pipeline that exited may still have jobs we never saw a `finished` line
+    // for (cancellation, or a crash mid-run). Settle them to the run's outcome
+    // so the board never shows a phantom spinner.
+    const pipeline = this.pipelines.get(id);
+    if (pipeline) {
+      const fallback: RunStatus = status === "canceled" ? "canceled" : "failed";
+      for (const job of pipeline.jobs.values()) {
+        if (job.status === "running") {
+          job.status = fallback;
+        }
+      }
+      this.liveEmitter.fire();
+    }
     if (this.shared && this.shared.id === id) {
       this.shared.passed = status === "passed";
     }
@@ -231,5 +409,9 @@ export class RunManager {
       this.shared = { terminal, id, passed: false };
     }
     return terminal;
+  }
+
+  dispose(): void {
+    this.liveEmitter.dispose();
   }
 }

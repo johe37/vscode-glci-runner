@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { JobIndex } from "./jobIndex";
 import { JobFilter } from "./filter";
 import { RunHistory } from "./history";
+import { RunManager } from "./runManager";
 import { GlciJob } from "./glci";
 
 /**
@@ -40,6 +41,8 @@ interface JobView {
   hasLocation: boolean;
   status?: string;
   lastRunId?: string;
+  /** When set, this card's status/log come from a pipeline run's live state. */
+  pipelineRunId?: string;
 }
 
 /**
@@ -52,12 +55,15 @@ interface JobView {
 export class Dashboard {
   private panel?: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
+  /** A past pipeline run the user clicked "Overview" on (a live run wins over this). */
+  private focusedPipelineRunId?: string;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly index: JobIndex,
     private readonly filter: JobFilter,
     private readonly history: RunHistory,
+    private readonly runManager: RunManager,
     private readonly getRoot: () => string,
   ) {
     // Keep the panel live as the underlying data changes.
@@ -66,6 +72,7 @@ export class Dashboard {
       this.index.onDidChange(refresh),
       this.filter.onDidChange(refresh),
       this.history.onDidChange(refresh),
+      this.runManager.onDidChangeLive(refresh),
     );
   }
 
@@ -122,12 +129,32 @@ export class Dashboard {
       case "runStage":
         vscode.commands.executeCommand("glci.runStage", { stage: msg.stage });
         return;
+      case "runPipeline":
+        vscode.commands.executeCommand("glci.runPipeline");
+        return;
+      case "openPipelineRun":
+        if (typeof msg.id === "string") {
+          this.focusedPipelineRunId = msg.id;
+          this.postState();
+        }
+        return;
+      case "exitPipelineOverview":
+        this.focusedPipelineRunId = undefined;
+        this.postState();
+        return;
+      case "showJobLog":
+        if (typeof msg.runId === "string" && typeof msg.job === "string") {
+          this.runManager.showJobLog(msg.runId, msg.job);
+        }
+        return;
       case "goto":
         vscode.commands.executeCommand("glci.goToDefinition", msg.name);
         return;
       case "rerun":
         // History rows carry their target + kind so re-run reproduces them.
-        if (msg.kind === "stage") {
+        if (msg.kind === "pipeline") {
+          vscode.commands.executeCommand("glci.runPipeline");
+        } else if (msg.kind === "stage") {
           vscode.commands.executeCommand("glci.runStage", { stage: msg.target });
         } else if (msg.kind === "job-needs") {
           vscode.commands.executeCommand("glci.runJobWithNeeds", msg.target);
@@ -167,16 +194,51 @@ export class Dashboard {
     if (!this.panel) {
       return;
     }
-    const toView = (job: GlciJob): JobView => ({
-      name: job.name,
-      stage: job.stage,
-      when: job.when,
-      allowFailure: job.allow_failure,
-      needs: normalizeNeeds(job.needs),
-      hasLocation: this.index.getLocation(job.name) !== undefined,
-      status: this.history.latestFor(job.name)?.status,
-      lastRunId: this.history.latestFor(job.name)?.id,
-    });
+    // A *running* pipeline auto-takes the board (so progress shows without a
+    // click); otherwise honor a run the user explicitly opened via "Overview".
+    const runs = this.history.all();
+    const liveRun = runs.find(
+      (r) => r.kind === "pipeline" && r.status === "running",
+    );
+    const focusRun =
+      liveRun ??
+      (this.focusedPipelineRunId
+        ? runs.find(
+            (r) =>
+              r.id === this.focusedPipelineRunId && r.kind === "pipeline",
+          )
+        : undefined);
+    const overlay = focusRun
+      ? this.runManager.pipelineStatuses(focusRun.id)
+      : undefined;
+
+    const toView = (job: GlciJob): JobView => {
+      if (overlay && focusRun) {
+        // In overview mode the card reflects this pipeline run's per-job state;
+        // jobs not yet started have no entry (shown as pending).
+        const status = overlay[job.name];
+        return {
+          name: job.name,
+          stage: job.stage,
+          when: job.when,
+          allowFailure: job.allow_failure,
+          needs: normalizeNeeds(job.needs),
+          hasLocation: this.index.getLocation(job.name) !== undefined,
+          status,
+          pipelineRunId: status !== undefined ? focusRun.id : undefined,
+        };
+      }
+      return {
+        name: job.name,
+        stage: job.stage,
+        when: job.when,
+        allowFailure: job.allow_failure,
+        needs: normalizeNeeds(job.needs),
+        hasLocation: this.index.getLocation(job.name) !== undefined,
+        status: this.history.latestFor(job.name)?.status,
+        lastRunId: this.history.latestFor(job.name)?.id,
+      };
+    };
 
     const stages = this.index
       .byStage()
@@ -195,8 +257,16 @@ export class Dashboard {
         hideSkipped: this.filter.isHidingSkipped,
         hasSkipConfig: this.filter.hasSkipConfig,
       },
+      focus: focusRun
+        ? {
+            runId: focusRun.id,
+            status: focusRun.status,
+            startTime: focusRun.startTime,
+            endTime: focusRun.endTime ?? null,
+          }
+        : null,
       stages,
-      history: this.history.all(),
+      history: runs,
     });
   }
 
@@ -226,6 +296,7 @@ export class Dashboard {
       <span class="root" id="root"></span>
     </div>
     <div class="actions">
+      <button class="btn primary" data-act="runPipeline" title="Run every job in order, like a real pipeline">▶ Run pipeline</button>
       <button class="btn" data-act="refresh" title="Re-list jobs">⟳ Refresh</button>
       <button class="btn" data-act="preview" title="Expand the pipeline">Preview</button>
       <button class="btn" data-act="validate" title="Validate dependency chain">Validate</button>
@@ -235,6 +306,8 @@ export class Dashboard {
   </header>
 
   <div id="error" class="error" hidden></div>
+
+  <div id="focusBar" class="focusbar" hidden></div>
 
   <main id="board" class="board"></main>
 
@@ -310,6 +383,15 @@ body {
   background: rgba(221,43,14,.12); border: 1px solid var(--fail);
   color: var(--vscode-foreground); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: 12px;
 }
+.focusbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 12px 16px 0; padding: 8px 12px; border-radius: 6px;
+  background: rgba(31,117,203,.12); border: 1px solid var(--run);
+  font-size: 12px;
+}
+.focusbar .focus-label { font-weight: 600; }
+.focusbar .focus-counts { color: var(--vscode-descriptionForeground); }
+.focusbar .spacer { flex: 1 1 auto; }
 .board {
   display: flex; gap: 16px; padding: 16px; overflow-x: auto; align-items: flex-start;
   position: relative;
@@ -572,7 +654,13 @@ function renderCard(job) {
     goto.addEventListener("click", () => vscode.postMessage({ type: "goto", name: job.name }));
     actions.appendChild(goto);
   }
-  if (job.lastRunId) {
+  if (job.pipelineRunId) {
+    const log = el("button", "btn ghost tiny", "Log");
+    log.title = "Show this job's output from the pipeline run";
+    log.addEventListener("click", () =>
+      vscode.postMessage({ type: "showJobLog", runId: job.pipelineRunId, job: job.name }));
+    actions.appendChild(log);
+  } else if (job.lastRunId) {
     const log = el("button", "btn ghost tiny", "Log");
     log.title = "Show this job's last run output";
     log.addEventListener("click", () => vscode.postMessage({ type: "showLog", id: job.lastRunId }));
@@ -597,7 +685,7 @@ function renderHistory(history) {
 
     const label = el("div");
     label.appendChild(el("span", "hlabel", r.label));
-    const kindText = r.kind === "stage" ? "stage" : r.kind === "job-needs" ? "job + needs" : "job";
+    const kindText = r.kind === "pipeline" ? "pipeline" : r.kind === "stage" ? "stage" : r.kind === "job-needs" ? "job + needs" : "job";
     label.appendChild(el("span", "hkind", kindText));
     row.appendChild(label);
 
@@ -608,6 +696,12 @@ function renderHistory(history) {
     row.appendChild(durSpan);
 
     const actions = el("div", "hactions");
+    if (r.kind === "pipeline") {
+      const overview = el("button", "btn ghost tiny", "Overview");
+      overview.title = "Show this pipeline run on the board";
+      overview.addEventListener("click", () => vscode.postMessage({ type: "openPipelineRun", id: r.id }));
+      actions.appendChild(overview);
+    }
     const log = el("button", "btn ghost tiny", "Log");
     log.title = "Show this run's captured output";
     log.addEventListener("click", () => vscode.postMessage({ type: "showLog", id: r.id }));
@@ -626,6 +720,32 @@ function renderHistory(history) {
     row.appendChild(actions);
     list.appendChild(row);
   }
+}
+
+// The banner shown when the board is scoped to a single pipeline run. Live job
+// counts are derived from the (already-overridden) card statuses in msg.stages.
+function renderFocus(focus, stages) {
+  const bar = document.getElementById("focusBar");
+  bar.innerHTML = "";
+  if (!focus) { bar.hidden = true; return; }
+  bar.hidden = false;
+
+  let running = 0, passed = 0, failed = 0, pending = 0;
+  for (const s of stages) for (const j of s.jobs) {
+    if (j.status === "running") running++;
+    else if (j.status === "passed") passed++;
+    else if (j.status === "failed") failed++;
+    else pending++;
+  }
+
+  const verb = focus.status === "running" ? "started" : "ran";
+  bar.appendChild(el("span", "focus-label", "Pipeline run · " + focus.status + " · " + verb + " " + fmtAgo(focus.startTime)));
+  bar.appendChild(el("span", "focus-counts",
+    running + " running · " + passed + " passed · " + failed + " failed · " + pending + " pending"));
+  bar.appendChild(el("span", "spacer"));
+  const exit = el("button", "btn ghost tiny", "✕ Exit overview");
+  exit.addEventListener("click", () => vscode.postMessage({ type: "exitPipelineOverview" }));
+  bar.appendChild(exit);
 }
 
 function bindToolbar() {
@@ -647,6 +767,7 @@ window.addEventListener("message", (e) => {
   document.getElementById("hideNever").checked = msg.filters.hideNever;
   document.getElementById("hideSkipped").checked = msg.filters.hideSkipped;
   document.getElementById("hideSkippedWrap").style.display = msg.filters.hasSkipConfig ? "" : "none";
+  renderFocus(msg.focus, msg.stages);
   renderBoard(msg.stages);
   renderHistory(msg.history);
   liveTimers = msg.history.some((r) => r.status === "running");
