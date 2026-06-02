@@ -33,16 +33,13 @@ export interface GlciJob {
  * `CI_COMMIT_BRANCH`, etc. via `glci.variables` to make `rules:` evaluate as a
  * real pipeline would — add every key from `glci.variables`.
  */
-function ignorePredefinedVars(): string {
+function ignorePredefinedVars(vars: Record<string, string>): string {
   const names = new Set<string>(["FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR"]);
   for (const n of (process.env.GCL_IGNORE_PREDEFINED_VARS ?? "").split(",")) {
     if (n.trim()) {
       names.add(n.trim());
     }
   }
-  const vars =
-    vscode.workspace.getConfiguration("glci").get<Record<string, string>>("variables") ??
-    {};
   for (const key of Object.keys(vars)) {
     names.add(key);
   }
@@ -50,10 +47,10 @@ function ignorePredefinedVars(): string {
 }
 
 /** Environment for listing/preview/validate. Colors off; JSON-safe stdout. */
-function listEnv(): NodeJS.ProcessEnv {
+function listEnv(vars: Record<string, string>): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(),
+    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(vars),
     FORCE_COLOR: "0",
   };
 }
@@ -64,10 +61,10 @@ function listEnv(): NodeJS.ProcessEnv {
  * pseudoterminal keeps gitlab-ci-local's ANSI coloring (the piped stdout is not
  * a TTY, so the binary would otherwise drop color).
  */
-function runEnv(): NodeJS.ProcessEnv {
+function runEnv(vars: Record<string, string>): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(),
+    GCL_IGNORE_PREDEFINED_VARS: ignorePredefinedVars(vars),
     FORCE_COLOR: "1",
   };
 }
@@ -83,11 +80,8 @@ function extraArgs(): string[] {
   return vscode.workspace.getConfiguration("glci").get<string[]>("extraArgs") ?? [];
 }
 
-/** `glci.variables` map → repeated `--variable KEY=VALUE` argument tokens. */
-function variableArgs(): string[] {
-  const vars =
-    vscode.workspace.getConfiguration("glci").get<Record<string, string>>("variables") ??
-    {};
+/** Variables map → repeated `--variable KEY=VALUE` argument tokens. */
+function variableArgs(vars: Record<string, string>): string[] {
   const out: string[] = [];
   for (const [key, value] of Object.entries(vars)) {
     out.push("--variable", `${key}=${value}`);
@@ -108,8 +102,8 @@ function expandEnv(value: string): string {
  * (listing, preview, validate). Env vars are expanded here because there is no
  * shell to do it.
  */
-function globalExecArgs(): string[] {
-  return [...variableArgs(), ...extraArgs().map(expandEnv)];
+function globalExecArgs(vars: Record<string, string>): string[] {
+  return [...variableArgs(vars), ...extraArgs().map(expandEnv)];
 }
 
 /**
@@ -132,14 +126,30 @@ function parseListJson(raw: string): GlciJob[] {
 }
 
 export class Glci {
-  /** @param root resolver for the project root (the gitlab-ci-local cwd). */
-  constructor(private readonly root: () => string) {}
+  /**
+   * @param root resolver for the project root (the gitlab-ci-local cwd).
+   * @param extraVars runtime CI variables (from the UI) merged over the
+   *   `glci.variables` setting, with UI values winning on conflict.
+   */
+  constructor(
+    private readonly root: () => string,
+    private readonly extraVars: () => Record<string, string> = () => ({}),
+  ) {}
+
+  /** Settings `glci.variables` with the runtime (UI) variables layered on top. */
+  private mergedVars(): Record<string, string> {
+    const config =
+      vscode.workspace
+        .getConfiguration("glci")
+        .get<Record<string, string>>("variables") ?? {};
+    return { ...config, ...this.extraVars() };
+  }
 
   /** Verify the binary is callable; returns the version string or throws. */
   async checkBinary(): Promise<string> {
     const { stdout } = await execFileAsync(binaryPath(), ["--version"], {
       cwd: this.root(),
-      env: listEnv(),
+      env: listEnv(this.mergedVars()),
     });
     return stdout.trim();
   }
@@ -150,11 +160,12 @@ export class Glci {
     // child process `cwd` instead and omit the flag.
     const bin = binaryPath();
     const cwd = this.root();
+    const vars = this.mergedVars();
     try {
       const { stdout } = await execFileAsync(
         bin,
-        ["--list-json", ...globalExecArgs()],
-        { cwd, env: listEnv(), maxBuffer: 32 * 1024 * 1024 },
+        ["--list-json", ...globalExecArgs(vars)],
+        { cwd, env: listEnv(vars), maxBuffer: 32 * 1024 * 1024 },
       );
       return parseListJson(stdout);
     } catch (err) {
@@ -185,7 +196,7 @@ export class Glci {
 
   /** Environment for job runs (predefined-var suppression + forced color). */
   get runEnv(): NodeJS.ProcessEnv {
-    return runEnv();
+    return runEnv(this.mergedVars());
   }
 
   /**
@@ -197,12 +208,12 @@ export class Glci {
     if (opts.withNeeds) {
       args.push("--needs");
     }
-    return [...args, ...globalExecArgs()];
+    return [...args, ...globalExecArgs(this.mergedVars())];
   }
 
   /** Argv for running an entire stage via a non-shell `spawn`. */
   buildStageArgs(stage: string): string[] {
-    return ["--stage", stage, ...globalExecArgs()];
+    return ["--stage", stage, ...globalExecArgs(this.mergedVars())];
   }
 
   /**
@@ -211,7 +222,7 @@ export class Glci {
    * exactly like a real pipeline run.
    */
   buildPipelineArgs(): string[] {
-    return [...globalExecArgs()];
+    return [...globalExecArgs(this.mergedVars())];
   }
 
   /** Run `--preview` / `--validate` and stream output into a channel. */
@@ -222,11 +233,12 @@ export class Glci {
   ): Promise<void> {
     channel.show(true);
     channel.appendLine(`$ ${binaryPath()} ${extraFlags.join(" ")} (${label})`);
+    const vars = this.mergedVars();
     try {
       const { stdout, stderr } = await execFileAsync(
         binaryPath(),
-        [...extraFlags, ...globalExecArgs()],
-        { cwd: this.root(), env: listEnv(), maxBuffer: 64 * 1024 * 1024 },
+        [...extraFlags, ...globalExecArgs(vars)],
+        { cwd: this.root(), env: listEnv(vars), maxBuffer: 64 * 1024 * 1024 },
       );
       if (stderr.trim()) {
         channel.appendLine(stderr.trimEnd());
