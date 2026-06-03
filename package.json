@@ -1,7 +1,7 @@
 {
-  "name": "gitlab-ci-local-runner",
-  "displayName": "GitLab CI Local Runner",
-  "description": "Discover GitLab CI jobs and run them locally with one click via gitlab-ci-local.",
+  "name": "glci-runner",
+  "displayName": "GitLab CI Runner (glci)",
+  "description": "Discover GitLab CI jobs and run them locally with one click via glci.",
   "version": "0.1.0",
   "publisher": "basalt",
   "license": "MIT",
@@ -14,7 +14,7 @@
   "keywords": [
     "gitlab",
     "ci",
-    "gitlab-ci-local",
+    "glci",
     "pipeline"
   ],
   "main": "./dist/extension.js",
@@ -24,17 +24,17 @@
   ],
   "contributes": {
     "configuration": {
-      "title": "GitLab CI Local Runner",
+      "title": "GitLab CI Runner (glci)",
       "properties": {
         "glci.projectRoot": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Project root that gitlab-ci-local runs against (where `.gitlab-ci.yml` lives). Leave empty to use the workspace folder. Accepts an absolute path, a `~`/`$HOME`-prefixed path, or a path relative to the workspace folder. Useful when the workspace is a monorepo/parent of the CI project, or for debugging a different checkout."
+          "markdownDescription": "Project root that glci runs against (where `.gitlab-ci.yml` lives). Leave empty to use the workspace folder. Accepts an absolute path, a `~`/`$HOME`-prefixed path, or a path relative to the workspace folder. Useful when the workspace is a monorepo/parent of the CI project, or for debugging a different checkout."
         },
         "glci.binaryPath": {
           "type": "string",
-          "default": "gitlab-ci-local",
-          "description": "Path to the gitlab-ci-local executable. Defaults to looking it up on PATH."
+          "default": "glci",
+          "description": "Path to the glci executable. Defaults to looking it up on PATH."
         },
         "glci.extraArgs": {
           "type": "array",
@@ -42,7 +42,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Raw global arguments appended to every gitlab-ci-local invocation (listing, preview, and runs). Each array element is one token. In the terminal these are passed **verbatim**, so the shell expands `$HOME` etc.; in non-shell calls `$VAR`/`${VAR}` are expanded against the environment. Example: `[\"--volume\", \"$HOME/.basalt:/root/.basalt\"]`."
+          "markdownDescription": "Raw global arguments appended to every glci invocation. Each array element is one token. `$VAR`/`${VAR}` are expanded against the environment. Example: `[\"-f\", \"custom-ci.yml\"]`."
         },
         "glci.variables": {
           "type": "object",
@@ -50,7 +50,17 @@
             "type": "string"
           },
           "default": {},
-          "markdownDescription": "Global CI variables applied to every gitlab-ci-local invocation as `--variable KEY=VALUE`. Example: `{ \"CRATON_NEXUS_CACERT\": \"/root/.basalt/basalt-chain.crt\" }`."
+          "markdownDescription": "CI variables passed to `glci run` as `--env KEY=VALUE`. Applied to every job, stage, and pipeline run. Example: `{ \"REGISTRY_PASSWORD\": \"secret\" }`."
+        },
+        "glci.defaultImage": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Fallback Docker image passed as `--image` to `glci run` for jobs that have no explicit `image:` in the CI config. glci cannot resolve images inherited via `extends:` or a top-level `image:` in an included file, so those jobs would otherwise run with `alpine:latest`. Set this to your project's base runner image, e.g. `registry.example.com/runner:1.0.0`. Jobs with an explicit job-level image always use that image regardless of this setting."
+        },
+        "glci.listContext": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Pipeline context passed as `--context` to `glci show` when listing jobs. When empty (default), glci visualizes the full pipeline without rule filtering so **all** jobs appear regardless of `$CI_PIPELINE_SOURCE` or branch rules. Set to a specific context to filter, e.g. `branch=main` (simulates a push), `merge_request`, or `tag=v1.0`."
         },
         "glci.ciFileGlobs": {
           "type": "array",
@@ -81,7 +91,7 @@
       "activitybar": [
         {
           "id": "glci",
-          "title": "GitLab CI Local",
+          "title": "GitLab CI (glci)",
           "icon": "media/icon.svg"
         }
       ]
@@ -92,141 +102,141 @@
           "id": "glci.jobs",
           "name": "Jobs",
           "icon": "media/icon.svg",
-          "contextualTitle": "GitLab CI Local"
+          "contextualTitle": "GitLab CI (glci)"
         }
       ]
     },
     "viewsWelcome": [
       {
         "view": "glci.jobs",
-        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\n[Open GitLab CI](command:glci.openHome)\nMake sure a .gitlab-ci.yml exists and gitlab-ci-local is installed."
+        "contents": "No GitLab CI jobs found yet.\n[Refresh](command:glci.refresh)\n[Open GitLab CI](command:glci.openHome)\nMake sure a .gitlab-ci.yml exists and glci is installed."
       }
     ],
     "commands": [
       {
         "command": "glci.runJob",
         "title": "Run Job",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(play)"
       },
       {
         "command": "glci.runJobWithNeeds",
         "title": "Run Job (with needs)",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(run-all)"
       },
       {
         "command": "glci.runStage",
         "title": "Run Stage",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(play)"
       },
       {
         "command": "glci.runPipeline",
         "title": "Run Pipeline",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(run-all)"
       },
       {
         "command": "glci.preview",
         "title": "Preview Expanded Pipeline",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(eye)"
       },
       {
         "command": "glci.validate",
         "title": "Validate Pipeline",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(check)"
       },
       {
         "command": "glci.refresh",
         "title": "Refresh Jobs",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(refresh)"
       },
       {
         "command": "glci.openHome",
         "title": "Open GitLab CI",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(rocket)"
       },
       {
         "command": "glci.openJobs",
         "title": "Open Jobs View",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(list-unordered)"
       },
       {
         "command": "glci.openPipelines",
         "title": "Open Pipelines View",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(graph)"
       },
       {
         "command": "glci.openPipeline",
         "title": "Open Pipeline View",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(graph)"
       },
       {
         "command": "glci.clearHistory",
         "title": "Clear Run History",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(clear-all)"
       },
       {
         "command": "glci.clearJobHistory",
         "title": "Clear Job Run History",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(clear-all)"
       },
       {
         "command": "glci.clearPipelines",
         "title": "Clear Pipeline Runs",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(clear-all)"
       },
       {
         "command": "glci.deletePipeline",
         "title": "Delete Pipeline Run",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(trash)"
       },
       {
         "command": "glci.cancelRun",
         "title": "Cancel Run",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(stop-circle)"
       },
       {
         "command": "glci.showRunLog",
         "title": "Show Run Log",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(output)"
       },
       {
         "command": "glci.setProjectRoot",
         "title": "Set Project Root...",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(root-folder)"
       },
       {
         "command": "glci.toggleHideNever",
         "title": "Toggle: Hide 'when: never' Jobs",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(eye-closed)"
       },
       {
         "command": "glci.toggleHideSkipped",
         "title": "Toggle: Hide Skipped Jobs (.glciconfig.toml)",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(filter)"
       },
       {
         "command": "glci.goToDefinition",
         "title": "Go to Definition",
-        "category": "GitLab CI Local",
+        "category": "GitLab CI",
         "icon": "$(go-to-file)"
       }
     ],

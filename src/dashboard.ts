@@ -8,9 +8,8 @@ import { RuntimeVariables } from "./variables";
 import { GlciJob } from "./glci";
 
 /**
- * Reduce a job's `needs` to plain job names. gitlab-ci-local's `--list-json`
- * may emit each entry either as a bare string or as a `{ job: "name", ... }`
- * object; we accept both so the webview can match needs against job names.
+ * Reduce a job's `needs` to plain job names. Accepts either a bare string or a
+ * `{ job: "name", ... }` object so the webview can match needs against job names.
  */
 function normalizeNeeds(needs: GlciJob["needs"]): string[] {
   if (!needs) {
@@ -1085,7 +1084,7 @@ function renderVariables(state) {
   const head = el("div", "view-head");
   head.appendChild(el("h2", null, "Pipeline variables"));
   c.appendChild(head);
-  c.appendChild(el("p", "hint", "CI variables passed to every local run as --variable KEY=VALUE. They merge with glci.variables from settings (these win) and persist for this workspace. Saving re-evaluates which jobs run."));
+  c.appendChild(el("p", "hint", "CI variables passed to every local run as --env KEY=VALUE. They merge with glci.variables from settings (these win) and persist for this workspace. Saving re-evaluates which jobs run."));
   const editor = el("div", "var-editor");
   editor.id = "varEditor";
   const vars = state.variables || [];

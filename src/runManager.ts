@@ -48,7 +48,7 @@ interface LivePipeline {
 }
 
 /**
- * Runs jobs/stages by spawning `gitlab-ci-local` and piping its output into a
+ * Runs jobs/stages by spawning `glci` and piping its output into a
  * {@link vscode.Pseudoterminal} (live, colored, `Ctrl-C`-able) while capturing
  * the exit code, duration, and full output. Results land in {@link RunHistory};
  * the captured log is viewable any time via {@link showLog}, so a failure is
@@ -87,7 +87,7 @@ export class RunManager {
     private readonly store: PipelineStore,
   ) {}
 
-  runJob(name: string, opts: { withNeeds?: boolean } = {}): void {
+  runJob(name: string, opts: { withNeeds?: boolean; needs?: string[]; image?: string } = {}): void {
     const kind: RunKind = opts.withNeeds ? "job-needs" : "job";
     const label = opts.withNeeds ? `${name} (with needs)` : name;
     this.start(label, name, kind, this.glci.buildRunArgs(name, opts));
@@ -208,9 +208,8 @@ export class RunManager {
 
   /**
    * Classify one (ANSI-stripped) output line and update per-job state. Returns
-   * true if a job appeared or changed status. gitlab-ci-local prefixes each
-   * job line with the (space-padded) job name; the trailing summary uses
-   * ` PASS  <job>` / ` FAIL  <job>`.
+   * true if a job appeared or changed status. Looks for ` PASS  <job>` /
+   * ` FAIL  <job>` summary lines, and lines prefixed with the job name.
    */
   private parseLine(
     id: string,

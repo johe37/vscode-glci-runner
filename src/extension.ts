@@ -21,7 +21,7 @@ function expandHome(p: string): string {
 }
 
 /**
- * Resolve the project root that gitlab-ci-local runs against. Precedence:
+ * Resolve the project root that glci runs against. Precedence:
  *  1. `glci.projectRoot` (absolute, `~`-prefixed, or relative to the workspace),
  *  2. the first workspace folder.
  */
@@ -128,13 +128,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("glci.runJob", (arg) => {
       const name = jobNameOf(arg);
       if (name) {
-        runManager.runJob(name);
+        const job = index.getJob(name);
+        runManager.runJob(name, { image: job?.image });
       }
     }),
     vscode.commands.registerCommand("glci.runJobWithNeeds", (arg) => {
       const name = jobNameOf(arg);
       if (name) {
-        runManager.runJob(name, { withNeeds: true });
+        const job = index.getJob(name);
+        runManager.runJob(name, { withNeeds: true, needs: job?.needs, image: job?.image });
       }
     }),
     vscode.commands.registerCommand("glci.runStage", (arg) => {
@@ -197,10 +199,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await pipelineStore.delete(id);
     }),
     vscode.commands.registerCommand("glci.preview", () =>
-      glci.runToChannel(output, ["--preview"], "preview"),
+      glci.runToChannel(output, glci.buildPreviewArgs(), "preview"),
     ),
     vscode.commands.registerCommand("glci.validate", () =>
-      glci.runToChannel(output, ["--validate-dependency-chain"], "validate"),
+      glci.runToChannel(output, ["lint"], "validate"),
     ),
     vscode.commands.registerCommand("glci.refresh", () => refresh()),
     vscode.commands.registerCommand("glci.setProjectRoot", async () => {
@@ -331,7 +333,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   glci.checkBinary().catch(() => {
     vscode.window
       .showWarningMessage(
-        "gitlab-ci-local was not found. Set 'glci.binaryPath' or install it.",
+        "glci was not found. Set 'glci.binaryPath' or install it.",
         "Open Settings",
       )
       .then((choice) => {

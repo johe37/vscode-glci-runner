@@ -19,7 +19,7 @@ const RESERVED_KEYS = new Set([
 ]);
 
 /**
- * Holds the authoritative job list (from `gitlab-ci-local --list-json`) plus a
+ * Holds the authoritative job list (from `glci jobs --json`) plus a
  * map from job name to the YAML location where it is defined. The list drives
  * what is runnable; the location map powers "go to definition" and the tree.
  */

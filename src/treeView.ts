@@ -229,22 +229,14 @@ function buildPipelineTooltip(record: RunRecord): vscode.MarkdownString {
 function buildTooltip(job: GlciJob): vscode.MarkdownString {
   const md = new vscode.MarkdownString();
   md.appendMarkdown(`**${job.name}**\n\n`);
-  if (job.description) {
-    md.appendMarkdown(`${job.description}\n\n`);
-  }
   md.appendMarkdown(`- stage: \`${job.stage}\`\n`);
   md.appendMarkdown(`- when: \`${job.when}\`\n`);
   md.appendMarkdown(`- allow_failure: \`${job.allow_failure}\`\n`);
+  if (job.image) {
+    md.appendMarkdown(`- image: \`${job.image}\`\n`);
+  }
   if (job.needs && job.needs.length > 0) {
     md.appendMarkdown(`- needs: ${job.needs.map((n) => `\`${n}\``).join(", ")}\n`);
-  }
-  if (job.rules && job.rules.length > 0) {
-    md.appendMarkdown(`\n**Rules**\n`);
-    for (const rule of job.rules) {
-      const cond = rule.if ?? "(changes/exists)";
-      const when = rule.when ? ` → ${rule.when}` : "";
-      md.appendMarkdown(`- \`${cond}\`${when}\n`);
-    }
   }
   return md;
 }
